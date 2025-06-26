@@ -12,3 +12,13 @@ enerzymette idpp -r <reactant xyz path> -p <product xyz path> -o <output xyz pat
 ```
 
 If multiple frames are stored in the reactant or the product xyz file (for example, an optimization trajectory), the last frame will be used.
+
+## Terachem timing
+Calculate total wall time from TeraChem output files, handling multiple iteration tables and identifying unfinished calculations.
+
+The script analyzes TeraChem output files to extract timing information from iteration tables, providing detailed statistics including total wall time, average time per iteration, and identification of unfinished calculations.
+
+Usage:
+```
+enerzymette terachem_timing -f <terachem output file path>
+```

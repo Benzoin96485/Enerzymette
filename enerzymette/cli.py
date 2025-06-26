@@ -28,6 +28,15 @@ def get_parser():
     parser_idpp.add_argument('-c', '--constraints', type=str,
         help='terachem input file path'
     )
+    
+    parser_terachem_timing = subparsers.add_parser(
+        "terachem_timing",
+        help="Calculate the wall time of a terachem job",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_terachem_timing.add_argument('-f', '--filename', type=str,
+        help='terachem output file path'
+    )
     args = parser.parse_args()
     return args
 
@@ -42,6 +51,11 @@ def main():
             output_path=args.output,
             n_images=args.n_images,
             constraints_file=args.constraints,
+        )
+    elif args.command == 'terachem_timing':
+        from .terachem_timing import terachem_timing
+        return terachem_timing(
+            filename=args.filename
         )
     else:
         raise NotImplementedError(f"Command {args.command} is not supported now.")
