@@ -63,8 +63,8 @@ def idpp(reactant_path: str, product_path: str, output_path: str, n_images: int,
     IDPP interpolation between two molecules.
     '''
     # sanity check
-    reactant: Atoms = ase.io.read(reactant_path)
-    product: Atoms = ase.io.read(product_path)
+    reactant: Atoms = ase.io.read(reactant_path, index=-1)
+    product: Atoms = ase.io.read(product_path, index=-1)
     assert n_images > 2, "n_images must be greater than 2"
 
     images = [reactant]
