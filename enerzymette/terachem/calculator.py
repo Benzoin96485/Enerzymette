@@ -60,12 +60,15 @@ class Terachem(GenericFileIOCalculator):
 
     Example:
 
-      calc = Terachem(charge=0, mult=1, orcasimpleinput='B3LYP def2-TZVP',
-        orcablocks='%pal nprocs 16 end')
+      calc = Terachem(charge=0, mult=1, terachemblocks='''run gradient
+basis 6-31gs
+method b3lyp
+end
+''')
     """
 
     def __init__(self, *, profile=None, directory='.', **kwargs):
-        """Construct ORCA-calculator object.
+        """Construct Terachem-calculator object.
 
         Parameters
         ==========
@@ -73,25 +76,24 @@ class Terachem(GenericFileIOCalculator):
 
         mult: int
 
-        orcasimpleinput : str
-
-        orcablocks: str
+        terachemblocks: str
 
 
         Examples
         ========
         Use default values:
 
-        >>> from ase.calculators.orca import ORCA
-        >>> h = Atoms(
-        ...     'H',
-        ...     calculator=ORCA(
+        >>> from enerzymette.terachem.calculator import Terachem
+        >>> He = Atoms(
+        ...     'He',
+        ...     calculator=Terachem(
         ...         charge=0,
         ...         mult=1,
-        ...         directory='water',
-        ...         orcasimpleinput='B3LYP def2-TZVP',
-        ...         orcablocks='%pal nprocs 16 end'))
-
+        ...         terachemblocks='''run gradient
+basis 6-31gs
+method b3lyp
+end
+'''))
         """
 
         super().__init__(template=TerachemTemplate(),
