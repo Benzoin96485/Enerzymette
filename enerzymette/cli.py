@@ -53,7 +53,7 @@ def main():
             constraints_file=args.constraints,
         )
     elif args.command == 'terachem_timing':
-        from .terachem_timing import terachem_timing
+        from .terachem.terachem_timing import terachem_timing
         return terachem_timing(
             filename=args.filename
         )
