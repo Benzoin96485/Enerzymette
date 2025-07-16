@@ -1,14 +1,15 @@
 from pathlib import Path
-from typing import List, Optional, TextIO
-from shutil import rmtree
+from typing import List, Optional, TextIO, Dict, Union
+from shutil import rmtree, move
 import numpy as np
+from ase import Atoms
 from ase.units import Bohr, Hartree, Debye
 from ase.utils import reader, writer
 
 # Made from NWChem interface
 
 @writer
-def write_terachem(fd, atoms, params):
+def write_terachem(fd: TextIO, atoms: Atoms, params: Dict[str, Union[str, int, float]], find_mo_flags: Dict[str, bool]):
     # conventional filename: '<name>.inp'
     important_keywords = set()
     for line in params.get("terachemblocks", "").split("\n"):
@@ -27,6 +28,8 @@ def write_terachem(fd, atoms, params):
         if clean_line.startswith("scrdir "):
             scr_path = clean_line.split()[1]
             important_keywords.add("scrdir")
+        if clean_line.startswith("guess "):
+            important_keywords.add("guess")
         fd.write(f"{clean_line}\n")
 
     if "charge" not in important_keywords:
@@ -41,6 +44,11 @@ def write_terachem(fd, atoms, params):
     if "scrdir" not in important_keywords:
         scr_path = params.get('scrdir', 'scr')
         fd.write(f"scrdir {scr_path}\n")
+    if "guess" not in important_keywords:
+        if find_mo_flags["c0"]:
+            fd.write(f"guess {find_mo_flags['c0']}\n")
+        elif find_mo_flags["ca"] and find_mo_flags["cb"]:
+            fd.write(f"guess {find_mo_flags['ca']} {find_mo_flags['cb']}\n")
 
     fd.write(f"end\n")
     return coordinates_path, scr_path
@@ -54,9 +62,23 @@ def write_xyz(fd, atoms):
         fd.write(f"{atom.symbol} {atom.position[0]} {atom.position[1]} {atom.position[2]}\n")
 
 
-def clean_scr(scr_path):
-    if Path(scr_path).exists():
+def clean_scr(scr_path: str, keep_mo: bool=True, label: Optional[str]=None):
+    find_mo_flags = {
+        "c0": '',
+        "ca": '',
+        "cb": '',
+    }
+    scr_path_ = Path(scr_path)
+    if scr_path_.exists():
+        if keep_mo:
+            for mo_name in ["c0", "ca", "cb"]:
+                mo_path = scr_path_ / mo_name
+                if mo_path.exists():
+                    new_mo_path = f"{mo_name}_{label}" if label is not None else mo_name
+                    find_mo_flags[mo_name] = new_mo_path
+                    move(mo_path, scr_path_.parent / new_mo_path)
         rmtree(scr_path)
+    return find_mo_flags
 
 
 def read_energy(lines: List[str]) -> Optional[float]:

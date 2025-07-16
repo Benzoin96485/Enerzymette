@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from .io import write_terachem, read_terachem_outputs, write_xyz, clean_scr
 from ase.calculators.genericfileio import (
     BaseProfile,
@@ -26,10 +27,12 @@ class TerachemProfile(BaseProfile):
 class TerachemTemplate(CalculatorTemplate):
     _label = 'terachem'
 
-    def __init__(self):
+    def __init__(self, label: str='terachem', keep_mo: bool=True):
         super().__init__('terachem',
                          implemented_properties=['energy', 'forces', 'dipole'])
 
+        self._label = label
+        self.keep_mo = keep_mo
         self.inputname = f'{self._label}.inp'
         self.outputname = f'{self._label}.out'
         self.errorname = f'{self._label}.err'
@@ -44,8 +47,16 @@ class TerachemTemplate(CalculatorTemplate):
         kw = dict()
         kw.update(parameters)
 
-        coordinates_path, scr_path = write_terachem(directory / self.inputname, atoms, kw)
-        clean_scr(scr_path)
+        new_scr_path = Path(parameters["scrdir"]) if "scrdir" in parameters else None
+        if new_scr_path is not None:
+            find_mo_flags = clean_scr(new_scr_path, keep_mo=self.keep_mo, label=self._label)
+            for key, value in find_mo_flags.items():
+                if value:
+                    print(f"move molecular orbitals {key} from {new_scr_path} to {value}")
+            coordinates_path, scr_path = write_terachem(directory / self.inputname, atoms, kw, find_mo_flags)
+        else:
+            coordinates_path, scr_path = write_terachem(directory / self.inputname, atoms, kw, False)
+            clean_scr(scr_path, keep_mo=self.keep_mo, label=self._label)
         write_xyz(directory / coordinates_path, atoms)
 
     def read_results(self, directory):
@@ -67,7 +78,7 @@ end
 ''')
     """
 
-    def __init__(self, *, profile=None, directory='.', **kwargs):
+    def __init__(self, *, profile=None, directory='.', label='terachem', keep_mo=True, **kwargs):
         """Construct Terachem-calculator object.
 
         Parameters
@@ -96,6 +107,6 @@ end
 '''))
         """
 
-        super().__init__(template=TerachemTemplate(),
+        super().__init__(template=TerachemTemplate(label=label, keep_mo=keep_mo),
                          profile=profile, directory=directory,
                          parameters=kwargs)
