@@ -37,6 +37,18 @@ def get_parser():
     parser_terachem_timing.add_argument('-f', '--filename', type=str,
         help='terachem output file path'
     )
+
+    parser_orca_terachem_request = subparsers.add_parser(
+        "orca_terachem_request",
+        help="Request a terachem job from orca",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_orca_terachem_request.add_argument('-i', '--input', type=str,
+        help='orca input file path'
+    )
+    parser_orca_terachem_request.add_argument('-t', '--template', type=str,
+        help='terachem input template file path'
+    )
     args = parser.parse_args()
     return args
 
@@ -53,9 +65,15 @@ def main():
             constraints_file=args.constraints,
         )
     elif args.command == 'terachem_timing':
-        from .terachem.terachem_timing import terachem_timing
+        from .terachem.timing import terachem_timing
         return terachem_timing(
             filename=args.filename
+        )
+    elif args.command == 'orca_terachem_request':
+        from .terachem.orca_io import run
+        return run(
+            orca_extinp_file=args.input,
+            terachem_input_template=args.template,
         )
     else:
         raise NotImplementedError(f"Command {args.command} is not supported now.")

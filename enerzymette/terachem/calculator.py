@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from .io import write_terachem, read_terachem_outputs, write_xyz, clean_scr
+from .ase_io import write_terachem, read_terachem_outputs, write_xyz, clean_scr
 from ase.calculators.genericfileio import (
     BaseProfile,
     CalculatorTemplate,
