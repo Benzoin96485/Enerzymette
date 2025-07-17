@@ -1,5 +1,6 @@
 # Enerzymette
-A collection of small scripts that are useful for Enerzyme
+A collection of small scripts that are useful for Enerzyme. Install it in the cloned git repo by
+`pip install -e .`
 
 ## IDPP
 Transition path interpolation between reactants and products with IDPP method implemented in [ASE](https://wiki.fysik.dtu.dk/ase/ase/neb.html#ase.mep.neb.idpp_interpolate).
