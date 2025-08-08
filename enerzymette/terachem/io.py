@@ -56,7 +56,7 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
             else:
                 raise ValueError(f"Unexpected end in section: {current_section}")
         elif current_section is None and clean_line.startswith("$"):
-            current_section = clean_line[:-1]
+            current_section = clean_line[1:]
             info[current_section] = defaultdict(list)
         elif clean_line == "$end":
             if current_section == "main" or current_section is None:
@@ -70,8 +70,23 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
             else:
                 info[current_section][key] = value
         elif current_section is not None:
-            info[current_section]["content"].append(clean_line)
-
+            info[current_section]["raw_content"].append(clean_line)
+            if current_section == "constraint_freeze":
+                constraint_type, indices = clean_line.split()
+                if set(list(constraint_type)) <= {"x", "y", "z"} and len(constraint_type) <= 3:
+                    index_segments = indices.split(",")
+                    index_list = []
+                    for i in index_segments:
+                        if "-" in i:
+                            start, end = i.split("-")
+                            index_list.extend(range(int(start), int(end) + 1))
+                        else:
+                            index_list.append(int(i))
+                    info[current_section][constraint_type].extend(index_list)
+                if constraint_type in {"bond", "angle", "dihedral"}:
+                    index_segments = indices.split(",")
+                    index_list = [tuple(map(int, index.split("_"))) for index in index_segments]
+                    info[current_section][constraint_type].extend(index_list)
     return info
 
 
@@ -88,7 +103,7 @@ def write_terachem_input(info: Dict[str, Any], terachem_input_file: str):
             if section == "main":
                 continue
             f.write(f"${section}\n")
-            for line in content["content"]:
+            for line in content["raw_content"]:
                 f.write(f"{line}\n")
             f.write("$end\n")
 
