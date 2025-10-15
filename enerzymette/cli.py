@@ -49,6 +49,40 @@ def get_parser():
     parser_orca_terachem_request.add_argument('-t', '--template', type=str,
         help='terachem input template file path'
     )
+
+    parser_launch_enerzyme_neb = subparsers.add_parser(
+        "enerzyme_neb",
+        help="Launch a enerzyme neb job",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_launch_enerzyme_neb.add_argument('-r', '--reactant', type=str,
+        help='initial reactant path'
+    )
+    parser_launch_enerzyme_neb.add_argument('-p', '--product', type=str,
+        help='initial product path'
+    )
+    parser_launch_enerzyme_neb.add_argument('-o', '--output', type=str,
+        help='output path', default="."
+    )
+    parser_launch_enerzyme_neb.add_argument('-m', '--model', type=str,
+        help='model path', default=".."
+    )
+    parser_launch_enerzyme_neb.add_argument('-q', '--reference', type=str,
+        help='quantum chemistry parameters reference path'
+    )
+    parser_launch_enerzyme_neb.add_argument('-c', '--server_config', type=str,
+        help='server config path'
+    )
+    parser_launch_enerzyme_neb.add_argument('-n', '--n_images', type=int,
+        help='number of images', default=25
+    )
+    parser_launch_enerzyme_neb.add_argument('-b', '--port', type=int,
+        help='port', default=5000
+    )
+    parser_launch_enerzyme_neb.add_argument('-i', '--interrupt_strategy', type=str,
+        help='interrupt strategy', default="stdout"
+    )
+
     args = parser.parse_args()
     return args
 
@@ -75,6 +109,20 @@ def main():
             orca_extinp_file=args.input,
             terachem_input_template=args.template,
         )
+    elif args.command == "enerzyme_neb":
+        from .nebtoolkit.launcher import EnerzymeNEBLauncher
+        launcher = EnerzymeNEBLauncher(
+            reactant_path=args.reactant,
+            product_path=args.product,
+            output_path=args.output,
+            model_path=args.model,
+            reference_path=args.reference,
+            server_config_path=args.server_config,
+            n_images=args.n_images,
+            port=args.port,
+            interrupt_strategy=args.interrupt_strategy,
+        )
+        launcher.launch()
     else:
         raise NotImplementedError(f"Command {args.command} is not supported now.")
 
