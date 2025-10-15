@@ -7,6 +7,7 @@ from glob import glob
 from .logger import logger
 from .io import write_orca_neb_in, make_backup, read_energy, redirect_output, parse_neb_csv, get_mep_path_info
 from .analysis import find_intermediate_indices, find_rate_determining_step, find_new_name, check_neb_convergence
+from .network import find_available_port
 
 
 class EnerzymeNEBLauncher:
@@ -34,7 +35,13 @@ class EnerzymeNEBLauncher:
         self.local_minima_path = os.path.join(self.output_path, "local_minima")
         self.model_path = model_path
         self.server_config_path = server_config_path
-        self.port = port
+        self.port = find_available_port(start_port=port)
+        if self.port is None:
+            raise RuntimeError("No available port found")
+        elif self.port != port:
+            logger.warning(f"Port {port} is not available, using {self.port} instead")
+        else:
+            logger.info(f"Port {self.port} is available")
         self.reactant_name = reactant_name
         self.product_name = product_name
         self.reference = self.parse_reference(reference_path, "terachem_input")
@@ -120,6 +127,8 @@ class EnerzymeNEBLauncher:
                 resume = True
             else:
                 csv_fp = open(csv_path, "w")
+                csv_fp.write("reactant,product\n")
+                csv_fp.flush()
 
             while True:
                 reaction_name = f"{current_reactant_name}-{current_product_name}"
@@ -138,6 +147,7 @@ class EnerzymeNEBLauncher:
                             current_ts_path = None
                     else:
                         csv_fp.write(f"{current_reactant_name},{current_product_name}\n")
+                        csv_fp.flush()
                     elementary_reaction_info = self.launch_elementary_reaction(current_reactant_path, current_product_path, elementary_reaction_path, current_ts_path)
                 else:
                     logger.info(f"Information collected for last reaction {reaction_name}")
@@ -264,6 +274,7 @@ class EnerzymeNEBLauncher:
                                 orca_subprocess.terminate()
                                 break
                         elif "THE NEB OPTIMIZATION HAS CONVERGED" in line_decoded:
+                            mep_path_info = get_mep_path_info(elementary_reaction_path)
                             converged = True
                         neb_out_fp.write(line_decoded)
                         neb_out_fp.flush()
