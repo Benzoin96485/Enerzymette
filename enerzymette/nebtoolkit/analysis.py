@@ -10,13 +10,18 @@ def find_intermediate_indices(energies: List[float]) -> List[int]:
             intermediate_indices.append(i)
     return intermediate_indices
 
-def find_rate_determining_step(intermediate_indices, energies) -> Tuple[int, int, int]:
-    max_energy = float("-inf")
+def find_ci_index(energies: List[float]) -> int:
     ci_index = -1
+    max_energy = float("-inf")
     for i, energy in enumerate(energies):
         if energy > max_energy:
             max_energy = energy
             ci_index = i
+    return ci_index
+
+def find_rate_determining_step(intermediate_indices, energies, ci_index) -> Tuple[int, int, int]:
+    if ci_index < 0:
+        ci_index = find_ci_index(energies)
     new_reactant_index = 0
     new_product_index = len(energies) - 1
     for intermediate_index in sorted(intermediate_indices):
@@ -83,3 +88,13 @@ def check_neb_convergence(elementary_reaction_path: str) -> bool:
             if "THE NEB OPTIMIZATION HAS CONVERGED" in line:
                 return True
     return False
+
+def check_latest_ci_index(elementary_reaction_path: str, ci_neb_pattern: re.Pattern) -> int:
+    ci_index = -1
+    output_path = os.path.join(elementary_reaction_path, "neb.out")
+    with open(output_path, "r") as f:
+        for line in f:
+            match = ci_neb_pattern.match(line)
+            if match is not None:
+                ci_index = int(match.groups()[0])
+    return ci_index

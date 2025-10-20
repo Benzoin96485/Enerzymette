@@ -2,11 +2,11 @@ from typing import Optional, Literal, Dict, Any
 from threading import Thread
 import ase.io
 from ase.units import kcal, mol, Ha
-import os, subprocess, time, sys, traceback, shutil
+import os, subprocess, time, sys, traceback, shutil, re, json
 from glob import glob
 from .logger import logger
 from .io import write_orca_neb_in, make_backup, read_energy, redirect_output, parse_neb_csv, get_mep_path_info
-from .analysis import find_intermediate_indices, find_rate_determining_step, find_new_name, check_neb_convergence
+from .analysis import find_intermediate_indices, find_rate_determining_step, find_new_name, check_neb_convergence, check_latest_ci_index, find_ci_index
 from .network import find_available_port
 
 
@@ -22,7 +22,8 @@ class EnerzymeNEBLauncher:
         port: int=5000,
         reactant_name: str="1a",
         product_name: str="2a",
-        interrupt_strategy: Literal["none", "stdout"]="stdout"
+        interrupt_strategy: Literal["none", "stdout"]="stdout",
+        optimization_method: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS"
     ):
         # sanity check
         self.orca_exe = os.environ.get("ORCA_PATH", None)
@@ -35,6 +36,8 @@ class EnerzymeNEBLauncher:
         self.local_minima_path = os.path.join(self.output_path, "local_minima")
         self.model_path = model_path
         self.server_config_path = server_config_path
+        self.optimization_method = optimization_method
+        self.ci_neb_pattern = re.compile(r"\s+" + self.optimization_method + r"\s+\d+\s+(\d+)\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+")
         self.port = find_available_port(start_port=port)
         if self.port is None:
             raise RuntimeError("No available port found")
@@ -74,8 +77,8 @@ class EnerzymeNEBLauncher:
         product_energies = [read_energy(product_path) for product_path in product_paths]
         lowest_reactant_energy = min(reactant_energies)
         lowest_product_energy = min(product_energies)
-        lowest_reactant_name = reactant_paths[reactant_energies.index(lowest_reactant_energy)]
-        lowest_product_name = product_paths[product_energies.index(lowest_product_energy)]
+        lowest_reactant_name = os.path.basename(reactant_paths[reactant_energies.index(lowest_reactant_energy)]).split(".")[0]
+        lowest_product_name = os.path.basename(product_paths[product_energies.index(lowest_product_energy)]).split(".")[0]
         return lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy
 
     def launch(self):
@@ -95,6 +98,10 @@ class EnerzymeNEBLauncher:
                 break
         logger.info(f"Enerzyme server is ready")
 
+        enerzyme_out_fp = open("enerzyme.out", "w")
+        enerzyme_out_thread = Thread(target=redirect_output, args=(self.enerzyme_subprocess.stdout, enerzyme_out_fp), daemon=True)
+        enerzyme_out_thread.start()
+
         os.makedirs(self.local_minima_path, exist_ok=True)
         os.makedirs(os.path.join(self.local_minima_path, "reactant"), exist_ok=True)
         os.makedirs(os.path.join(self.local_minima_path, "product"), exist_ok=True)
@@ -109,6 +116,7 @@ class EnerzymeNEBLauncher:
             current_ts_path = None
 
             resume = False
+            recall = False
             existing_reactions = []
             csv_path = os.path.join(self.output_path, "neb.csv")
             if os.path.exists(csv_path):
@@ -155,9 +163,12 @@ class EnerzymeNEBLauncher:
                 self.copy_local_minima(current_reactant_name, current_product_name)
                 resume = False
 
-                if elementary_reaction_info["intermediate_indices"]:
-                    mep_path_info = elementary_reaction_info["mep_path_info"]
-                    reactant_index, product_index, ts_index = find_rate_determining_step(elementary_reaction_info["intermediate_indices"], mep_path_info["energies"])
+                intermediate_indices = elementary_reaction_info["intermediate_indices"]
+                mep_path_info = elementary_reaction_info["mep_path_info"]
+                if len(intermediate_indices) > 0 and not recall:
+                    logger.info(f"Intermediate indices in the chain: {intermediate_indices}")
+                    ci_index = elementary_reaction_info["ci_index"]
+                    reactant_index, product_index, ts_index = find_rate_determining_step(intermediate_indices, mep_path_info["energies"], ci_index)
                     current_reactant_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{reactant_index}.xyz")
                     current_product_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{product_index}.xyz")
                     current_ts_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{ts_index}.xyz")
@@ -177,21 +188,75 @@ class EnerzymeNEBLauncher:
                         logger.info(f"New product {current_product_name} of rate determining step is found from image {product_index} of reaction {reaction_name}")
                     logger.info(f"TS initial guess for new reaction {current_reactant_name}-{current_product_name} is found from image {ts_index} of reaction {reaction_name}")
                 elif not elementary_reaction_info["converged"]:
-                    logger.warning(f"NEB did not converge for reaction {reaction_name}, restarting...")
+                    if not recall:
+                        logger.warning(f"NEB did not converge for reaction {reaction_name}, restarting...")
+                    else:
+                        logger.warning(f"Restarting {reaction_name}")
+                        recall = False
                     self.restart_elementary_reaction(elementary_reaction_path)
                 else:
                     logger.info(f"NEB converged for reaction {reaction_name}!")
-                    ts_energy = read_energy(os.path.join(elementary_reaction_path, "neb_NEB-CI_converged.xyz"))
+                    ts_dir = os.path.join(self.output_path, "rate_determining_ts")
+                    os.makedirs(ts_dir, exist_ok=True)
+                    ts_path = os.path.join(elementary_reaction_path, "neb_NEB-CI_converged.xyz")
+                    if os.path.exists(ts_path):
+                        ts_energy = read_energy(ts_path)
+                        shutil.copy(ts_path, os.path.join(ts_dir, f"{reaction_name}.xyz"))
+                    else:
+                        bad_convergence = False
+                        if mep_path_info is None:
+                            bad_convergence = True
+                        else:
+                            energies = mep_path_info["energies"]
+                            ci_index = find_ci_index(energies)
+                            if ci_index == 0 or ci_index == len(energies) - 1:
+                                bad_convergence = True
+                        
+                        if bad_convergence:
+                            logger.warning(f"No MEP path information found for reaction {reaction_name}, backtracking to the previous reaction")
+                            recall = True
+                            resume = True
+                            if reactant_names[-1] == current_reactant_name:
+                                reactant_names.pop()
+                                current_reactant_name = reactant_names[-1]
+                            if product_names[-1] == current_product_name:
+                                product_names.pop()
+                                current_product_name = product_names[-1]
+                            csv_fp.close()
+                            csv_fp = open(csv_path, "w")
+                            csv_fp.write("reactant,product\n")
+                            for reactant_name, product_name in zip(reactant_names, product_names):
+                                csv_fp.write(f"{reactant_name},{product_name}\n")
+                            csv_fp.flush()
+                            continue
+                        else:
+                            logger.info(f"NEB-CI converged file not found at {ts_path}, finding TS from the image {ci_index} of the MEP")
+                            ts_energy = energies[ci_index]
+                            with open(ts_path, "w") as f:
+                                f.writelines(mep_path_info["xyzblocks"][ci_index])
+                    
                     lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
                     energy_span = (ts_energy - lowest_reactant_energy) * Ha / (kcal / mol)
                     energy_change = (lowest_product_energy - lowest_reactant_energy) * Ha / (kcal / mol)
                     logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol between reactant {lowest_reactant_name} and transition state of reaction {reaction_name}")
                     logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol between reactant {lowest_reactant_name} and product {lowest_product_name}")
+                    results = {
+                        "energy span": energy_span,
+                        "energy change": energy_change,
+                        "lowest energy reactant": lowest_reactant_name,
+                        "lowest energy product": lowest_product_name
+                    }
+                    with open(os.path.join(ts_dir, "results.json"), "w") as f:
+                        json.dump(results, f, indent=4)
                     break
             
             # clean up
             logger.info(f"Calculation finished. Terminating enerzyme server...")
         except Exception as e:
+            csv_fp.close()
+            enerzyme_out_fp.close()
+            enerzyme_out_thread.join(timeout=10)
+            self.enerzyme_subprocess.kill()
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback_strs = traceback.format_exception(exc_type, exc_value, exc_traceback)
             logger.error(f"Error: {exc_type.__name__}: {exc_value}")
@@ -199,6 +264,8 @@ class EnerzymeNEBLauncher:
             logger.error(f"Terminating enerzyme server...")
 
         csv_fp.close()
+        enerzyme_out_fp.close()
+        enerzyme_out_thread.join(timeout=10)
         subprocess.Popen(["enerzyme", "kill", "-u", f"0.0.0.0:{self.port}"], cwd=self.output_path)
         time.sleep(10)
         if self.enerzyme_subprocess.poll() is None:
@@ -219,9 +286,15 @@ class EnerzymeNEBLauncher:
     def write_enerzyme_wrapper(self, wrapper_path: str):
         wrapper_str = f"""enerzyme request -i $1 -u 0.0.0.0:{self.port}
 """
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_str)
-        # set executable permission
+        try:
+            with open(wrapper_path, "w") as f:
+                f.write(wrapper_str)
+            # set executable permission
+        except OSError as e:
+            logger.error("Zombie process is executing wrapper file, overwriting it...")
+            os.remove(wrapper_path)
+            with open(wrapper_path, "w") as f:
+                f.write(wrapper_str)
         os.system(f"chmod +x {wrapper_path}")
 
     def check_elementary_reaction(self, elementary_reaction_path: str):
@@ -229,10 +302,12 @@ class EnerzymeNEBLauncher:
         if mep_path_info is not None:
             intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
             neb_converged = check_neb_convergence(elementary_reaction_path)
+            ci_index = check_latest_ci_index(elementary_reaction_path, self.ci_neb_pattern)
             return {
                 "mep_path_info": mep_path_info,
                 "intermediate_indices": intermediate_indices,
-                "converged": neb_converged
+                "converged": neb_converged,
+                "ci_index": ci_index
             }
         else:
             return None
@@ -241,9 +316,7 @@ class EnerzymeNEBLauncher:
         logger.info(f"Launching ORCA to run NEB with input file {neb_in_path}")
         neb_out_fp = open(os.path.join(elementary_reaction_path, "neb.out"), "w")
         neb_err_fp = open(os.path.join(elementary_reaction_path, "neb.err"), "w")
-        enerzyme_out_fp = open("enerzyme.out", "w")
-        enerzyme_out_thread = Thread(target=redirect_output, args=(self.enerzyme_subprocess.stdout, enerzyme_out_fp), daemon=True)
-        enerzyme_out_thread.start()
+        
         intermediate_indices = []
         orca_subprocess = subprocess.Popen(
             [self.orca_exe, "neb.in"], cwd=elementary_reaction_path,
@@ -259,16 +332,26 @@ class EnerzymeNEBLauncher:
                 mep_path_info = get_mep_path_info(elementary_reaction_path)
                 intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
             elif self.interrupt_strategy == "stdout":
+                ci_index = -1
         # Read ORCA subprocess stdout line by line and kill upon detecting intermediate minimum
                 while orca_subprocess.poll() is None:
                     line = orca_subprocess.stdout.readline()
                     if line:
                         line_decoded = line.decode("utf-8")
+                        match = self.ci_neb_pattern.match(line_decoded)
+                        if match is not None:
+                            match_groups = match.groups()
+                            new_ci_index = int(match_groups[0])
+                            if new_ci_index != ci_index:
+                                if ci_index == -1:
+                                    logger.info(f"Start NEB-CI optimization, CI index is {new_ci_index}")
+                                else:
+                                    logger.info(f"CI index changed to {new_ci_index}")
+                                ci_index = new_ci_index
                         if "Possible intermediate minimum found at" in line_decoded:
                             logger.info(f"ORCA warned: {line_decoded.strip()}, checking if there is an intermediate minimum...")
                             mep_path_info = get_mep_path_info(elementary_reaction_path)
                             intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
-                            logger.info(f"Intermediate indices in the chain: {intermediate_indices}")
                             if len(intermediate_indices) > 0:
                                 neb_out_fp.flush()
                                 orca_subprocess.terminate()
@@ -278,17 +361,22 @@ class EnerzymeNEBLauncher:
                             converged = True
                         neb_out_fp.write(line_decoded)
                         neb_out_fp.flush()
+                else:
+                    mep_path_info = get_mep_path_info(elementary_reaction_path)
 
         except Exception as e:
             neb_out_fp.close()
             neb_err_fp.close()
-            enerzyme_out_fp.close()
-            enerzyme_out_thread.join()
             raise e
+
+        neb_out_fp.close()
+        neb_err_fp.close()
+
         return {
             "converged": converged,
             "intermediate_indices": intermediate_indices,
-            "mep_path_info": mep_path_info
+            "mep_path_info": mep_path_info,
+            "ci_index": ci_index
         }
 
     def launch_elementary_reaction(self, 
