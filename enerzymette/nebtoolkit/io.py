@@ -94,6 +94,7 @@ def make_backup(elementary_reaction_path: str, filename: str):
             copy(os.path.join(elementary_reaction_path, filename), trial_path)
             logger.info(f"Backup {filename} made to {trial_path}")
             break
+    return copy_index
 
 def redirect_output(source_stream, dest_stream):
     for line in iter(source_stream.readline, b''):

@@ -1,3 +1,4 @@
+from operator import truediv
 from typing import Optional, Literal, Dict, Any
 from threading import Thread
 import ase.io
@@ -23,7 +24,8 @@ class EnerzymeNEBLauncher:
         reactant_name: str="1a",
         product_name: str="2a",
         interrupt_strategy: Literal["none", "stdout"]="stdout",
-        optimization_method: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS"
+        optimization_method: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS",
+        max_restart_attempts: int=10
     ):
         # sanity check
         self.orca_exe = os.environ.get("ORCA_PATH", None)
@@ -56,6 +58,7 @@ class EnerzymeNEBLauncher:
         logger.info(f"Multiplicity: {self.multiplicity}")
         self.interrupt_strategy = interrupt_strategy
         self.enerzyme_subprocess = None
+        self.max_restart_attempts = max_restart_attempts
 
     def copy_local_minima(self, reactant_name: str, product_name: str):
         elementary_reaction_path = os.path.join(self.output_path, f"{reactant_name}-{product_name}")
@@ -162,6 +165,7 @@ class EnerzymeNEBLauncher:
 
                 self.copy_local_minima(current_reactant_name, current_product_name)
                 resume = False
+                backtrack_flag = False
 
                 intermediate_indices = elementary_reaction_info["intermediate_indices"]
                 mep_path_info = elementary_reaction_info["mep_path_info"]
@@ -180,12 +184,12 @@ class EnerzymeNEBLauncher:
                         f.writelines(mep_path_info["xyzblocks"][ts_index])
                     if reactant_index != 0:
                         current_reactant_name = find_new_name(reactant_names)
-                        reactant_names.append(current_reactant_name)
                         logger.info(f"New reactant {current_reactant_name} of rate determining step is found from image {reactant_index} of reaction {reaction_name}")
                     if product_index != self.n_images - 1:
                         current_product_name = find_new_name(product_names)
-                        product_names.append(current_product_name)
                         logger.info(f"New product {current_product_name} of rate determining step is found from image {product_index} of reaction {reaction_name}")
+                    reactant_names.append(current_reactant_name)
+                    product_names.append(current_product_name)
                     logger.info(f"TS initial guess for new reaction {current_reactant_name}-{current_product_name} is found from image {ts_index} of reaction {reaction_name}")
                 elif not elementary_reaction_info["converged"]:
                     if not recall:
@@ -193,7 +197,8 @@ class EnerzymeNEBLauncher:
                     else:
                         logger.warning(f"Restarting {reaction_name}")
                         recall = False
-                    self.restart_elementary_reaction(elementary_reaction_path)
+                    backtrack_flag = self.restart_elementary_reaction(elementary_reaction_path)
+                    resume = True
                 else:
                     logger.info(f"NEB converged for reaction {reaction_name}!")
                     ts_dir = os.path.join(self.output_path, "rate_determining_ts")
@@ -203,53 +208,53 @@ class EnerzymeNEBLauncher:
                         ts_energy = read_energy(ts_path)
                         shutil.copy(ts_path, os.path.join(ts_dir, f"{reaction_name}.xyz"))
                     else:
-                        bad_convergence = False
                         if mep_path_info is None:
-                            bad_convergence = True
+                            logger.warning(f"No MEP path information found for reaction {reaction_name}, backtracking to the previous reaction and deleting the current reaction")
+                            backtrack_flag = True
                         else:
                             energies = mep_path_info["energies"]
                             ci_index = find_ci_index(energies)
                             if ci_index == 0 or ci_index == len(energies) - 1:
-                                bad_convergence = True
-                        
-                        if bad_convergence:
-                            logger.warning(f"No MEP path information found for reaction {reaction_name}, backtracking to the previous reaction")
-                            recall = True
-                            resume = True
-                            if reactant_names[-1] == current_reactant_name:
-                                reactant_names.pop()
-                                current_reactant_name = reactant_names[-1]
-                            if product_names[-1] == current_product_name:
-                                product_names.pop()
-                                current_product_name = product_names[-1]
-                            csv_fp.close()
-                            csv_fp = open(csv_path, "w")
-                            csv_fp.write("reactant,product\n")
-                            for reactant_name, product_name in zip(reactant_names, product_names):
-                                csv_fp.write(f"{reactant_name},{product_name}\n")
-                            csv_fp.flush()
-                            continue
-                        else:
-                            logger.info(f"NEB-CI converged file not found at {ts_path}, finding TS from the image {ci_index} of the MEP")
-                            ts_energy = energies[ci_index]
-                            with open(ts_path, "w") as f:
-                                f.writelines(mep_path_info["xyzblocks"][ci_index])
+                                logger.warning(f"CI index is 0 or the last image, backtracking to the previous reaction and deleting the current reaction")
+                                backtrack_flag = True
+                            else:
+                                logger.info(f"NEB-CI converged file not found at {ts_path}, finding TS from the image {ci_index} of the MEP")
+                                ts_energy = energies[ci_index]
+                                with open(ts_path, "w") as f:
+                                    f.writelines(mep_path_info["xyzblocks"][ci_index])
                     
-                    lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
-                    energy_span = (ts_energy - lowest_reactant_energy) * Ha / (kcal / mol)
-                    energy_change = (lowest_product_energy - lowest_reactant_energy) * Ha / (kcal / mol)
-                    logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol between reactant {lowest_reactant_name} and transition state of reaction {reaction_name}")
-                    logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol between reactant {lowest_reactant_name} and product {lowest_product_name}")
-                    results = {
-                        "energy span": energy_span,
-                        "energy change": energy_change,
-                        "lowest energy reactant": lowest_reactant_name,
-                        "lowest energy product": lowest_product_name
-                    }
-                    with open(os.path.join(ts_dir, "results.json"), "w") as f:
-                        json.dump(results, f, indent=4)
-                    break
-            
+                    if not backtrack_flag:
+                        lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
+                        energy_span = (ts_energy - lowest_reactant_energy) * Ha / (kcal / mol)
+                        energy_change = (lowest_product_energy - lowest_reactant_energy) * Ha / (kcal / mol)
+                        logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol between reactant {lowest_reactant_name} and transition state of reaction {reaction_name}")
+                        logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol between reactant {lowest_reactant_name} and product {lowest_product_name}")
+                        results = {
+                            "energy span": energy_span,
+                            "energy change": energy_change,
+                            "lowest energy reactant": lowest_reactant_name,
+                            "lowest energy product": lowest_product_name
+                        }
+                        with open(os.path.join(ts_dir, "results.json"), "w") as f:
+                            json.dump(results, f, indent=4)
+                        break
+                
+                if backtrack_flag:
+                    shutil.rmtree(elementary_reaction_path)
+                    recall = True
+                    resume = True
+                    if current_reactant_name == reactant_names[-1] and current_product_name == product_names[-1]:
+                        reactant_names.pop()
+                        product_names.pop()
+                        current_reactant_name = reactant_names[-1]
+                        current_product_name = product_names[-1]
+                    csv_fp.close()
+                    csv_fp = open(csv_path, "w")
+                    csv_fp.write("reactant,product\n")
+                    for reactant_name, product_name in zip(reactant_names, product_names):
+                        csv_fp.write(f"{reactant_name},{product_name}\n")
+                    csv_fp.flush()
+                    
             # clean up
             logger.info(f"Calculation finished. Terminating enerzyme server...")
         except Exception as e:
@@ -429,11 +434,14 @@ class EnerzymeNEBLauncher:
 
     def restart_elementary_reaction(self, 
         elementary_reaction_path: str
-    ):
+    ) -> bool:
         neb_in_path = os.path.join(elementary_reaction_path, "neb.in")
         wrapper_path = os.path.join(elementary_reaction_path, "enerzyme_wrapper.sh")
         for filename in ["neb_MEP.allxyz", "neb.out", "neb.err"]:
-            make_backup(elementary_reaction_path, filename)
+            back_index = make_backup(elementary_reaction_path, filename)
+        if back_index >= self.max_restart_attempts:
+            logger.warning(f"Maximum restart attempts {self.max_restart_attempts} reached for reaction in {elementary_reaction_path}, backtracking to the previous reaction and deleting the current reaction")
+            return True
         
         write_orca_neb_in(
             neb_in_path, wrapper_path, 
@@ -445,4 +453,5 @@ class EnerzymeNEBLauncher:
             charge=self.charge, 
             multiplicity=self.multiplicity,
         )
-        return self.monitor_elementary_reaction(elementary_reaction_path, neb_in_path)
+        self.monitor_elementary_reaction(elementary_reaction_path, neb_in_path)
+        return False
