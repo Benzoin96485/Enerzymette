@@ -1,4 +1,3 @@
-from operator import truediv
 from typing import Optional, Literal, Dict, Any
 from threading import Thread
 import ase.io
@@ -25,9 +24,44 @@ class EnerzymeNEBLauncher:
         product_name: str="2a",
         interrupt_strategy: Literal["none", "stdout"]="stdout",
         optimization_method: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS",
-        max_restart_attempts: int=10
-    ):
-        # sanity check
+        max_restart_attempts: int=10,
+        min_spring_constant: float=0.01,
+        max_spring_constant: float=0.1
+    ) -> None:
+        """
+        Params
+        ----------
+        reactant_path: str
+            The path to the reactant file, which should be readable by ASE.
+        product_path: str
+            The path to the product file, which should be readable by ASE.
+        output_path: str
+            The path to the output directory.
+        model_path: str
+            The path to the NNP model directory, which contains the config.yaml file and the model folder.
+        reference_path: str
+            The path to the reference quantum chemistry input file that contains the charge, spin multiplicity, and optimizationconstraints. 
+            Now only TeraChem input file with fixed atom constraints is supported.
+        server_config_path: str
+            The path to the server config file.
+        n_images: int
+            The number of images in the NEB chain (including the reactant and product).
+        port: int
+            The port to use for the server. If not available, the next available port will be used.
+        reactant_name: str
+            The name of the reactant. "1a" by default.
+        product_name: str
+            The name of the product. "2a" by default.
+        interrupt_strategy: str
+            The strategy to use for interrupting the ORCA NEB optimization by intermediate detection.
+            stdout: monitor ORCA warnings about potential intermediates from ORCA stdout and interrupt the NEB when an intermediate is found.
+            none: do not interrupt the NEB until the NEB finishes.
+        optimization_method: str
+            The ORCA NEB optimization method.
+        max_restart_attempts: int
+            The maximum number of restart attempts for one NEB calculation. If the NEB does not converge after the maximum number of restart attempts, the reaction will be backtracked to the previous reaction and deleted.
+        """
+        # check if orca is available
         self.orca_exe = os.environ.get("ORCA_PATH", None)
         if self.orca_exe is None:
             raise RuntimeError("ORCA_PATH is not set")
@@ -61,6 +95,9 @@ class EnerzymeNEBLauncher:
         self.max_restart_attempts = max_restart_attempts
 
     def copy_local_minima(self, reactant_name: str, product_name: str):
+        '''
+        Copy the reactant and product of an NEB calculation (local minima of the entire reaction path) with given reactant and product names to the local minima directory.
+        '''
         elementary_reaction_path = os.path.join(self.output_path, f"{reactant_name}-{product_name}")
         reactant_path = os.path.join(elementary_reaction_path, f"neb_reactant.xyz")
         product_path = os.path.join(elementary_reaction_path, f"neb_product.xyz")
@@ -74,6 +111,9 @@ class EnerzymeNEBLauncher:
             logger.warning(f"Product file does not exist for finished reaction {reactant_name}-{product_name}")
 
     def find_lowest_local_minima(self):
+        '''
+        Find the reactant and the product with the lowest energy from all reactant and product local minima of the entire reaction path.
+        '''
         reactant_paths = glob(os.path.join(self.local_minima_path, "reactant", "*.xyz"))
         product_paths = glob(os.path.join(self.local_minima_path, "product", "*.xyz"))
         reactant_energies = [read_energy(reactant_path) for reactant_path in reactant_paths]
@@ -384,6 +424,21 @@ class EnerzymeNEBLauncher:
             "ci_index": ci_index
         }
 
+    def _write_orca_neb_in(self, neb_in_path: str, wrapper_path: str, restart: bool=False, pre_opt: bool=True, use_ts: bool=False):
+        return write_orca_neb_in(
+            neb_in_path, wrapper_path, 
+            n_images=self.n_images,
+            restart=restart,
+            pre_opt=pre_opt,
+            use_ts=use_ts,
+            constraint_freeze_xyz=self.constraint_freeze_xyz, 
+            charge=self.charge, 
+            multiplicity=self.multiplicity,
+            optimizer=self.optimization_method,
+            min_spring_constant=self.min_spring_constant,
+            max_spring_constant=self.max_spring_constant
+        )
+
     def launch_elementary_reaction(self, 
         reactant_path: str, 
         product_path: str, 
@@ -421,13 +476,7 @@ class EnerzymeNEBLauncher:
 
         # write neb.in
         neb_in_path = os.path.join(elementary_reaction_path, "neb.in")
-        write_orca_neb_in(
-            neb_in_path, wrapper_path, 
-            n_images=self.n_images,
-            constraint_freeze_xyz=self.constraint_freeze_xyz, 
-            charge=self.charge, 
-            multiplicity=self.multiplicity
-        )
+        self._write_orca_neb_in(neb_in_path, wrapper_path)
         
         # spawn orca subprocess to run neb
         return self.monitor_elementary_reaction(elementary_reaction_path, neb_in_path)
@@ -443,15 +492,6 @@ class EnerzymeNEBLauncher:
             logger.warning(f"Maximum restart attempts {self.max_restart_attempts} reached for reaction in {elementary_reaction_path}, backtracking to the previous reaction and deleting the current reaction")
             return True
         
-        write_orca_neb_in(
-            neb_in_path, wrapper_path, 
-            n_images=self.n_images,
-            restart=True,
-            pre_opt=False,
-            use_ts=False,
-            constraint_freeze_xyz=self.constraint_freeze_xyz, 
-            charge=self.charge, 
-            multiplicity=self.multiplicity,
-        )
+        self._write_orca_neb_in(neb_in_path, wrapper_path, restart=True, pre_opt=False, use_ts=False)
         self.monitor_elementary_reaction(elementary_reaction_path, neb_in_path)
         return False

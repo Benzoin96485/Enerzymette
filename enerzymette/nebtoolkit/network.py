@@ -13,15 +13,6 @@ def find_available_port(start_port: int = 5000, max_port: int = 65535, host: str
     
     Returns:
         The first available port number, or None if no port is available
-    
-    Example:
-        >>> port = find_available_port()
-        >>> print(f"Available port: {port}")
-        Available port: 5000
-        
-        >>> port = find_available_port(start_port=8000)
-        >>> print(f"Available port: {port}")
-        Available port: 8000
     """
     for port in range(start_port, max_port + 1):
         try:

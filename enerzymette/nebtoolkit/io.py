@@ -14,6 +14,8 @@ def write_orca_neb_in(
     constraint_freeze_xyz: List[int]=[],
     charge: int=0,
     multiplicity: int=1,
+    min_spring_constant: float=0.01,
+    max_spring_constant: float=0.1
 ):
     if n_images < 2:
         raise ValueError("n_images must be greater than 2")
@@ -26,10 +28,12 @@ end
 %neb
 Product "product.xyz"
 Opt_Method {optimizer}
-{"" if restart else "#"} Restart_ALLXYZFile "neb_MEP.allxyz"
+{"" if restart else "# "}Restart_ALLXYZFile "neb_MEP.allxyz"
 NImages {n_images - 2}
 PreOpt {"true" if pre_opt else "false"}
-{"" if use_ts else "#"} TS "ts.xyz"
+{"" if use_ts else "# "}TS "ts.xyz"
+SpringConst {min_spring_constant}
+SpringConst2 {max_spring_constant}
 end
 
 """

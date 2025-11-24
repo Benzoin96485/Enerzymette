@@ -79,8 +79,20 @@ def get_parser():
     parser_launch_enerzyme_neb.add_argument('-b', '--port', type=int,
         help='port', default=5000
     )
+    parser_launch_enerzyme_neb.add_argument('--optimization_method', type=str,
+        help='optimization method', default="LBFGS"
+    )
     parser_launch_enerzyme_neb.add_argument('-i', '--interrupt_strategy', type=str,
         help='interrupt strategy', default="stdout"
+    )
+    parser_launch_enerzyme_neb.add_argument('--max_restart_attempts', type=int,
+        help='max restart attempts', default=10
+    )
+    parser_launch_enerzyme_neb.add_argument('--min_spring_constant', type=float,
+        help='min spring constant', default=0.01
+    )
+    parser_launch_enerzyme_neb.add_argument('--max_spring_constant', type=float,
+        help='max spring constant', default=0.1
     )
 
     args = parser.parse_args()
@@ -121,6 +133,10 @@ def main():
             n_images=args.n_images,
             port=args.port,
             interrupt_strategy=args.interrupt_strategy,
+            optimization_method=args.optimization_method,
+            max_restart_attempts=args.max_restart_attempts,
+            min_spring_constant=args.min_spring_constant,
+            max_spring_constant=args.max_spring_constant
         )
         launcher.launch()
     else:
