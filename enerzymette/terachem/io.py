@@ -87,6 +87,18 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
                     index_segments = indices.split(",")
                     index_list = [tuple(map(int, index.split("_"))) for index in index_segments]
                     info[current_section][constraint_type].extend(index_list)
+            elif current_section == "constraint_scan":
+                constraint_type, *scan_params = clean_line.split()
+                if constraint_type == "bond":
+                    x0, x1, n_steps, i0_i1 = scan_params
+                    i0, i1 = i0_i1.split("_")
+                    info[current_section][constraint_type] = {
+                        "x0": float(x0),
+                        "x1": float(x1),
+                        "num": int(n_steps),
+                        "i0": int(i0),
+                        "i1": int(i1)
+                    }
     return info
 
 

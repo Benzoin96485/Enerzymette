@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name='enerzymette',
     version='0.0.1',
-    install_requires=['ase'],
+    install_requires=['ase', 'mendeleev'],
     entry_points={'console_scripts': ['enerzymette=enerzymette.cli:main']},
     packages=find_packages(include=["enerzymette", "enerzymette.*"]),
     auth='Benzoin96485',

@@ -1,7 +1,7 @@
 from typing import Literal, List, Dict, Any, Tuple, Optional
 import os
 from shutil import copy
-from .logger import logger
+from ..logger import logger
 
 def write_orca_neb_in(
     neb_in_path: str,

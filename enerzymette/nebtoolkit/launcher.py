@@ -4,9 +4,10 @@ import ase.io
 from ase.units import kcal, mol, Ha
 import os, subprocess, time, sys, traceback, shutil, re, json
 from glob import glob
-from .logger import logger
+from ..logger import logger
 from .io import write_orca_neb_in, make_backup, read_energy, redirect_output, parse_neb_csv, get_mep_path_info
-from .analysis import find_intermediate_indices, find_rate_determining_step, find_new_name, check_neb_convergence, check_latest_ci_index, find_ci_index
+from ..mep_util import find_intermediate_indices, find_ci_index, find_rate_determining_step, find_new_name
+from .analysis import check_neb_convergence, check_latest_ci_index
 from .network import find_available_port
 
 
@@ -93,6 +94,8 @@ class EnerzymeNEBLauncher:
         self.interrupt_strategy = interrupt_strategy
         self.enerzyme_subprocess = None
         self.max_restart_attempts = max_restart_attempts
+        self.min_spring_constant = min_spring_constant
+        self.max_spring_constant = max_spring_constant
 
     def copy_local_minima(self, reactant_name: str, product_name: str):
         '''
@@ -136,6 +139,8 @@ class EnerzymeNEBLauncher:
 
         # monitor stdout, wait until the server is ready ("waitress | Serving" displayed in the file)
         while True:
+            if self.enerzyme_subprocess.poll() is not None:
+                raise RuntimeError(f"Enerzyme server exited with code {self.enerzyme_subprocess.returncode}")
             line = self.enerzyme_subprocess.stdout.readline()
             if line and "waitress | Serving" in line.decode("utf-8"):
                 break
@@ -215,13 +220,10 @@ class EnerzymeNEBLauncher:
                     reactant_index, product_index, ts_index = find_rate_determining_step(intermediate_indices, mep_path_info["energies"], ci_index)
                     current_reactant_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{reactant_index}.xyz")
                     current_product_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{product_index}.xyz")
-                    current_ts_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{ts_index}.xyz")
                     with open(current_reactant_path, "w") as f:
                         f.writelines(mep_path_info["xyzblocks"][reactant_index])
                     with open(current_product_path, "w") as f:
                         f.writelines(mep_path_info["xyzblocks"][product_index])
-                    with open(current_ts_path, "w") as f:
-                        f.writelines(mep_path_info["xyzblocks"][ts_index])
                     if reactant_index != 0:
                         current_reactant_name = find_new_name(reactant_names)
                         logger.info(f"New reactant {current_reactant_name} of rate determining step is found from image {reactant_index} of reaction {reaction_name}")
@@ -230,7 +232,14 @@ class EnerzymeNEBLauncher:
                         logger.info(f"New product {current_product_name} of rate determining step is found from image {product_index} of reaction {reaction_name}")
                     reactant_names.append(current_reactant_name)
                     product_names.append(current_product_name)
-                    logger.info(f"TS initial guess for new reaction {current_reactant_name}-{current_product_name} is found from image {ts_index} of reaction {reaction_name}")
+                    if ts_index >= 0:
+                        current_ts_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{ts_index}.xyz")
+                        with open(current_ts_path, "w") as f:
+                            f.writelines(mep_path_info["xyzblocks"][ts_index])
+                        logger.info(f"TS initial guess for new reaction {current_reactant_name}-{current_product_name} is found from image {ts_index} of reaction {reaction_name}")
+                    else:
+                        logger.warning(f"No TS initial guess found for new reaction {current_reactant_name}-{current_product_name}")
+                        current_ts_path = None
                 elif not elementary_reaction_info["converged"]:
                     if not recall:
                         logger.warning(f"NEB did not converge for reaction {reaction_name}, restarting...")

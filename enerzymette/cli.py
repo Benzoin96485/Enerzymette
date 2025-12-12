@@ -95,6 +95,27 @@ def get_parser():
         help='max spring constant', default=0.1
     )
 
+    parser_launch_enerzyme_scan = subparsers.add_parser(
+        "enerzyme_scan",
+        help="Launch a enerzyme scan job",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_launch_enerzyme_scan.add_argument('-r', '--reactant', type=str,
+        help='initial reactant path'
+    )
+    parser_launch_enerzyme_scan.add_argument('-o', '--output', type=str,
+        help='output path', default="."
+    )
+    parser_launch_enerzyme_scan.add_argument('-m', '--model', type=str,
+        help='model path', default=".."
+    )
+    parser_launch_enerzyme_scan.add_argument('-q', '--reference', type=str,
+        help='quantum chemistry parameters reference path'
+    )
+    parser_launch_enerzyme_scan.add_argument('-n', '--n_steps', type=int,
+        help='number of steps', default=25
+    )
+
     args = parser.parse_args()
     return args
 
@@ -137,6 +158,16 @@ def main():
             max_restart_attempts=args.max_restart_attempts,
             min_spring_constant=args.min_spring_constant,
             max_spring_constant=args.max_spring_constant
+        )
+        launcher.launch()
+    elif args.command == "enerzyme_scan":
+        from .scantoolkit.launcher import EnerzymeScanLauncher
+        launcher = EnerzymeScanLauncher(
+            reactant_path=args.reactant,
+            output_path=args.output,
+            model_path=args.model,
+            reference_path=args.reference,
+            n_steps=args.n_steps,
         )
         launcher.launch()
     else:
