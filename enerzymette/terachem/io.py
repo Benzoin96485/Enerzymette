@@ -47,28 +47,34 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
     info = {"main": {}}
     current_section = "main"
     for line in lines:
+        # don't save comments
         clean_line = line.split("#")[0].strip()
         if not clean_line:
             continue
+        # end of main section
         if clean_line == "end":
             if current_section == "main":
                 current_section = None
             else:
                 raise ValueError(f"Unexpected end in section: {current_section}")
-        elif current_section is None and clean_line.startswith("$"):
+        # start of other sections
+        elif clean_line.startswith("$"):
             current_section = clean_line[1:]
             info[current_section] = defaultdict(list)
+        # end of other sections
         elif clean_line == "$end":
             if current_section == "main" or current_section is None:
                 raise ValueError(f"Unexpected $end in section: {current_section}")
             else:
                 current_section = None
+        # parse key value pairs in main section
         elif current_section == "main":
             key, *value = clean_line.split()
             if len(value) == 1:
                 info["main"][key] = value[0]
             else:
                 info[current_section][key] = value
+        # parse key value pairs in other sections
         elif current_section is not None:
             info[current_section]["raw_content"].append(clean_line)
             if current_section == "constraint_freeze":
@@ -111,8 +117,15 @@ def write_terachem_input(info: Dict[str, Any], terachem_input_file: str):
             else:
                 f.write(f"{key} {value}\n")
         f.write("end\n")
+        if "constraint_scan" in info:
+            constraint_scan_section = info["constraint_scan"]
+            f.write("$constraint_scan\n")
+            for constraint_type, constraint_params in constraint_scan_section.items():
+                if constraint_type == "bond":
+                    f.write(f"{constraint_type} {constraint_params['x0']} {constraint_params['x1']} {constraint_params['num']} {constraint_params['i0']}_{constraint_params['i1']}\n")
+            f.write("$end\n")
         for section, content in info.items():
-            if section == "main":
+            if section in {"main", "constraint_scan"}:
                 continue
             f.write(f"${section}\n")
             for line in content["raw_content"]:

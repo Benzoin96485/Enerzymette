@@ -115,7 +115,20 @@ def get_parser():
     parser_launch_enerzyme_scan.add_argument('-n', '--n_steps', type=int,
         help='number of steps', default=25
     )
-
+    parser_update_terachem_scan = subparsers.add_parser(
+        "update_terachem_scan",
+        help="Update a terachem scan input file",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_update_terachem_scan.add_argument('-i', '--terachem_input', type=str,
+        help='terachem input file path'
+    )
+    parser_update_terachem_scan.add_argument('-s', '--updated_structure', type=str,
+        help='updated structure xyz file path'
+    )
+    parser_update_terachem_scan.add_argument('-o', '--output_path', type=str,
+        help='output path', default="."
+    )
     args = parser.parse_args()
     return args
 
@@ -170,6 +183,13 @@ def main():
             n_steps=args.n_steps,
         )
         launcher.launch()
+    elif args.command == "update_terachem_scan":
+        from .scantoolkit.io import update_terachem_scan_input
+        update_terachem_scan_input(
+            terachem_input_file=args.terachem_input,
+            updated_structure_xyz=args.updated_structure,
+            output_path=args.output_path,
+        )
     else:
         raise NotImplementedError(f"Command {args.command} is not supported now.")
 

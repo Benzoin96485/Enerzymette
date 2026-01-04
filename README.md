@@ -64,3 +64,10 @@ For this purpose, besides enerzymette, you need to prepare
 6. Make sure the `terachem` is an executable in your environment.
 
 Then run the ORCA job as usual.
+
+## Enerzyme Scan Launcher
+
+
+## Enerzyme NEB Launcher
+
+
