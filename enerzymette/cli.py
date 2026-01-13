@@ -129,6 +129,51 @@ def get_parser():
     parser_update_terachem_scan.add_argument('-o', '--output_path', type=str,
         help='output path', default="."
     )
+
+    parser_enerzyme_active_learning = subparsers.add_parser(
+        "enerzyme_active_learning",
+        help="Launch a enerzyme active learning job",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser_enerzyme_active_learning.add_argument('-p', '--pretrain', type=str,
+        help='pretrain path'
+    )
+    parser_enerzyme_active_learning.add_argument('-o', '--output', type=str,
+        help='output path', default="."
+    )
+    parser_enerzyme_active_learning.add_argument('-t', '--tmp', type=str,
+        help='tmp path', default="."
+    )
+    parser_enerzyme_active_learning.add_argument('-cp', '--calculator_patch', type=str,
+        help='calculator patch'
+    )
+    parser_enerzyme_active_learning.add_argument('-pp', '--plumed_patch', type=str,
+        help='plumed patch'
+    )   
+    parser_enerzyme_active_learning.add_argument('-sc', '--simulation_config', type=str,
+        help='simulation config path'
+    )
+    parser_enerzyme_active_learning.add_argument('-ec', '--extraction_config', type=str,
+        help='extraction config path'
+    )
+    parser_enerzyme_active_learning.add_argument('-ac', '--annotation_config', type=str,
+        help='annotation config path'
+    )
+    parser_enerzyme_active_learning.add_argument('-tc', '--training_config', type=str,
+        help='training config path'
+    )
+    parser_enerzyme_active_learning.add_argument('-n', '--n_iterations', type=int,
+        help='number of iterations', default=10
+    )
+    parser_enerzyme_active_learning.add_argument('-r', '--training_ratio', type=float,
+        help='training ratio', default=0.8
+    )
+    parser_enerzyme_active_learning.add_argument('-np', '--n_presimulation_steps_per_iteration', type=int,
+        help='number of presimulation steps per iteration', default=0
+    )
+    parser_enerzyme_active_learning.add_argument('-b', '--cluster_inference_batch_size', type=int,
+        help='cluster inference batch size', default=4
+    )
     args = parser.parse_args()
     return args
 
@@ -190,6 +235,24 @@ def main():
             updated_structure_xyz=args.updated_structure,
             output_path=args.output_path,
         )
+    elif args.command == "enerzyme_active_learning":
+        from .altoolkit.launcher import active_learning_launcher
+        launcher = active_learning_launcher(
+            pretrain_path=args.pretrain,
+            output_path=args.output,
+            tmp_path=args.tmp,
+            calculator_patch_key=args.calculator_patch,
+            plumed_patch_key=args.plumed_patch,
+            simulation_config_path=args.simulation_config,
+            extraction_config_path=args.extraction_config,
+            annotation_config_path=args.annotation_config,
+            training_config_path=args.training_config,
+            n_iterations=args.n_iterations,
+            training_ratio=args.training_ratio,
+            cluster_inference_batch_size=args.cluster_inference_batch_size,
+            n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
+        )
+        launcher.launch()
     else:
         raise NotImplementedError(f"Command {args.command} is not supported now.")
 

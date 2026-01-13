@@ -8,7 +8,7 @@ setup(
     packages=find_packages(include=["enerzymette", "enerzymette.*"]),
     auth='Benzoin96485',
     author_email='luowl7@mit.edu',
-    description='A collection of small scripts that are useful for Enerzyme',
+    description='Enerzyme workflow manager - Around Neural Biochemistry',
     url='https://github.com/Benzoin96485/Enerzymette',
     zip_safe=True,
 )
