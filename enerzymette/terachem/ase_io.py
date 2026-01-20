@@ -3,6 +3,7 @@ from typing import List, Optional, TextIO, Dict, Union
 from shutil import rmtree, move
 import numpy as np
 from ase import Atoms
+import ase.io
 from ase.units import Bohr, Hartree, Debye
 from ase.utils import reader, writer
 from .io import read_energy, read_grad
@@ -129,3 +130,10 @@ def read_terachem_outputs(directory, stdout_path):
     results = {}
     results.update(read_terachem_output(stdout_path))
     return results
+
+
+def read_terachem_scan_optim_xyz(terachem_scan_optim_xyz_file: str) -> List[float]:
+    atoms = ase.io.read(terachem_scan_optim_xyz_file, format="extxyz", index=":", properties_parser=lambda x: {
+        "energy": float(x.split()[4]) * Hartree
+    })
+    return atoms

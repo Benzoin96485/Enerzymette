@@ -174,6 +174,9 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-b', '--cluster_inference_batch_size', type=int,
         help='cluster inference batch size', default=4
     )
+    parser_enerzyme_active_learning.add_argument('-cl', '--continual_learning', action='store_true', default=False,
+        help='continual learning'
+    )
     args = parser.parse_args()
     return args
 
@@ -251,6 +254,7 @@ def main():
             training_ratio=args.training_ratio,
             cluster_inference_batch_size=args.cluster_inference_batch_size,
             n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
+            continual_learning=args.continual_learning,
         )
         launcher.launch()
     else:

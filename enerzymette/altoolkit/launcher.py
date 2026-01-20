@@ -50,6 +50,7 @@ class active_learning_launcher:
         training_ratio: float=0.8,
         cluster_inference_batch_size: int=4,
         n_presimulation_steps_per_iteration: int=0,
+        continual_learning: bool=False
     ) -> None:
         self.pretrain_path = pretrain_path
         self.pretrain_config = None
@@ -70,6 +71,7 @@ class active_learning_launcher:
         self.cluster_inference_batch_size = cluster_inference_batch_size
         self.n_presimulation_steps_per_iteration = n_presimulation_steps_per_iteration
         self.NA = None
+        self.continual_learning = continual_learning
 
     def _get_model_suffix(self, i: int) -> str:
         if not self.model_suffix:
@@ -94,10 +96,16 @@ class active_learning_launcher:
         self.model_architecture = all_internal_FFs[self.active_model_key]["architecture"]
         self.model_suffix = all_internal_FFs[self.active_model_key].get("suffix", "")
 
-    def _make_model_config(self, i: int, dump_path: str, new_config_path: Optional[str]=None, new_datahub_config: Optional[Dict]=None, new_trainer_config: Optional[Dict]=None, model_params_updater: Optional[Callable[[int, Dict], None]]=None) -> None:
+    def _make_model_config(self, i: int, dump_path: str, 
+        new_config_path: Optional[str]=None, 
+        new_datahub_config: Optional[Dict]=None, 
+        new_trainer_config: Optional[Dict]=None, 
+        model_params_updater: Optional[Callable[[int, Dict], None]]=None,
+        new_metric_config: Optional[Dict]=None,
+    ) -> None:
         suffix = self._get_model_suffix(i)
         model_config = copy.deepcopy(self.pretrain_config)
-        model_param = model_config["Modelhub"]["internal_FFs"][self.active_model_key]
+        model_param = model_config["Modelhub"]["internal_FFs"][self.active_model_key]    
         if new_config_path is not None:
             with open(new_config_path, "r") as f:
                 new_config = yaml.load(f, Loader=yaml.FullLoader)
@@ -115,6 +123,11 @@ class active_learning_launcher:
 
         if model_params_updater is not None:
             model_params_updater(i, model_param)
+
+        if new_metric_config is not None:
+            if model_config.get("Metric", None) is None:
+                model_config["Metric"] = {}
+            model_config["Metric"] = copy.deepcopy(new_metric_config)
 
         model_param["suffix"] = suffix
 
@@ -450,6 +463,22 @@ class active_learning_launcher:
         training_set_config["data_path"] = training_set_path
         validation_set_config = copy.deepcopy(self.pretrain_config["Datahub"])
         validation_set_config["data_path"] = validation_set_path
+        new_trainer_config = {
+            "Splitter": {
+                "method": "random",
+                "parts": [
+                    {"name": "training", "dataset": "training"},
+                    {"name": "validation", "dataset": "validation"}
+                ],
+                "save": False
+            }
+        }
+        if self.continual_learning and i > 0:
+            new_trainer_config.update({
+                "resume": 2,
+                "refresh_patience": True,
+                "refresh_best_score": True
+            })
         self._make_model_config(i + 1,
             dump_path=training_config_path, 
             new_config_path=self.training_config_path,
@@ -460,16 +489,7 @@ class active_learning_launcher:
                 },
                 "global_transforms": self.pretrain_config["Datahub"]["transforms"]
             },
-            new_trainer_config={
-                "Splitter": {
-                    "method": "random",
-                    "parts": [
-                        {"name": "training", "dataset": "training"},
-                        {"name": "validation", "dataset": "validation"}
-                    ],
-                    "save": False
-                }
-            },
+            new_trainer_config=new_trainer_config,
             model_params_updater=self._training_model_params_updater
         )
         enerzyme_subprocess = subprocess.Popen(
