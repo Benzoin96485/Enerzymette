@@ -14,6 +14,7 @@ class EnerzymeScanLauncher:
         output_path: str,
         model_path: str,
         reference_path: str,
+        model_config_path: Optional[str]=None,
         reactant_name: str="1a",
         product_name: str="2a",
         n_steps: int=25,
@@ -23,6 +24,7 @@ class EnerzymeScanLauncher:
         self.local_minima_path = os.path.join(self.output_path, "local_minima")
         self.model_path = model_path
         self.reference_path = reference_path
+        self.model_config_path = model_config_path
         self.reactant_name = reactant_name
         self.product_name = product_name
         self.n_steps = n_steps
@@ -173,8 +175,12 @@ class EnerzymeScanLauncher:
             initial_structure_path=init_reactant_path,
             config_path=reactant_opt_config_path
         )
+        if self.model_config_path is not None:
+            model_config_arg = ["-mc", self.model_config_path]
+        else:
+            model_config_arg = []
         opt_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", reactant_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path]
+            ["enerzyme", "simulate", "-c", reactant_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg
         )
         opt_subprocess.wait()
         opt_path = os.path.join(elementary_reaction_path, "optim.xyz")

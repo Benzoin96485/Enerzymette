@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from ase import Atoms
 from ase.units import kJ, mol, fs, kcal
 
@@ -7,14 +7,36 @@ def get_sammt_config(
     integrate_config: dict,
     idx_start_from: int,
     dump_interval: int,
-    index_sulphur: int,
-    index_methyl_carbon: int,
-    index_nucleophile: int,
     upper_bound: float,
     lower_bound: float,
+    reference_pdb_file: Optional[str]=None,
+    substrate: Optional[str]=None,
+    nucleophile: Optional[str]=None,
+    index_sulphur: Optional[int]=None,
+    index_methyl_carbon: Optional[int]=None,
+    index_nucleophile: Optional[int]=None,
     **kwargs
 ) -> List[str]:
     plumed_config = []
+    if reference_pdb_file is not None:
+        idx_start_from = 1
+        with open(reference_pdb_file, "r") as f:
+            atom_count = 0
+            for line in f.readlines():
+                if line.startswith("ATOM") or line.startswith("HETATM"):
+                    atom_count += 1
+                    resname = line[17:20]
+                    atomname = line[11:16].strip()
+                    if resname == "SAM":
+                        if atomname == "SD":
+                            index_sulphur = atom_count
+                        elif atomname == "CE":
+                            index_methyl_carbon = atom_count
+                    elif resname == substrate:
+                        if atomname == nucleophile:
+                            index_nucleophile = atom_count
+    if index_sulphur is None or index_methyl_carbon is None or index_nucleophile is None:
+        raise ValueError("Index of sulphur, methyl carbon, and nucleophile must be provided")
     plumed_config.append(f"UNITS LENGTH=A TIME={0.001 / fs} ENERGY={1 / kJ * mol}")
     plumed_config.append(f"d0: DISTANCE ATOMS={index_sulphur + 1 - idx_start_from},{index_methyl_carbon + 1 - idx_start_from} NOPBC")
     plumed_config.append(f"d1: DISTANCE ATOMS={index_methyl_carbon + 1 - idx_start_from},{index_nucleophile + 1 - idx_start_from} NOPBC")

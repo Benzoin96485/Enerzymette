@@ -73,6 +73,9 @@ def get_parser():
     parser_launch_enerzyme_neb.add_argument('-c', '--server_config', type=str,
         help='server config path'
     )
+    parser_launch_enerzyme_neb.add_argument('-mc', '--model_config', type=str,
+        help='model config path', default=None
+    )
     parser_launch_enerzyme_neb.add_argument('-n', '--n_images', type=int,
         help='number of images', default=25
     )
@@ -111,6 +114,9 @@ def get_parser():
     )
     parser_launch_enerzyme_scan.add_argument('-q', '--reference', type=str,
         help='quantum chemistry parameters reference path'
+    )
+    parser_launch_enerzyme_scan.add_argument('-mc', '--model_config', type=str,
+        help='model config path', default=None
     )
     parser_launch_enerzyme_scan.add_argument('-n', '--n_steps', type=int,
         help='number of steps', default=25
@@ -177,6 +183,15 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-cl', '--continual_learning', action='store_true', default=False,
         help='continual learning'
     )
+    parser_enerzyme_active_learning.add_argument('-rp', '--reference_pdb_file', type=str,
+        help='reference pdb file path', default=None
+    )
+    parser_enerzyme_active_learning.add_argument('-ts', '--template_sdf_file', type=str,
+        help='template sdf file path', default=None
+    )
+    parser_enerzyme_active_learning.add_argument('-rm', '--restraint_mode', type=str,
+        help='restraint mode', default="hard"
+    )
     args = parser.parse_args()
     return args
 
@@ -212,6 +227,7 @@ def main():
             model_path=args.model,
             reference_path=args.reference,
             server_config_path=args.server_config,
+            model_config_path=args.model_config,
             n_images=args.n_images,
             port=args.port,
             interrupt_strategy=args.interrupt_strategy,
@@ -228,6 +244,7 @@ def main():
             output_path=args.output,
             model_path=args.model,
             reference_path=args.reference,
+            model_config_path=args.model_config,
             n_steps=args.n_steps,
         )
         launcher.launch()
@@ -255,6 +272,9 @@ def main():
             cluster_inference_batch_size=args.cluster_inference_batch_size,
             n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
             continual_learning=args.continual_learning,
+            reference_pdb_file=args.reference_pdb_file,
+            template_sdf_file=args.template_sdf_file,
+            restraint_mode=args.restraint_mode,
         )
         launcher.launch()
     else:

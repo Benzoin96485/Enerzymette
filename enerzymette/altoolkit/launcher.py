@@ -1,6 +1,6 @@
 import os, subprocess, pickle, copy, sys, shutil, glob
 from random import shuffle
-from typing import Tuple, Optional, Dict, Callable
+from typing import Tuple, Optional, Dict, Callable, Literal
 import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
@@ -35,6 +35,31 @@ def collect_trajectory(simulation_trajectory_path: str, collection_path: str) ->
         pickle.dump(datapoints, f)
 
 
+resname_list = {
+    "CYS": "C",
+    "ASP": "D",
+    "SER": "S",
+    "GLN": "Q",
+    "LYS": "K",
+    "ILE": "I",
+    "PRO": "P",
+    "THR": "T",
+    "PHE": "F",
+    "ASN": "N",
+    "GLY": "G",
+    "HIS": "H",
+    "LEU": "L",
+    "ARG": "R",
+    "TRP": "W",
+    "ALA": "A",
+    "VAL": "V",
+    "GLU": "E",
+    "TYR": "Y",
+    "MET": "M",
+    "MSE": "M",
+    "HID": "H"
+}.keys()
+
 class active_learning_launcher:
     def __init__(self,
         pretrain_path: str,
@@ -47,6 +72,9 @@ class active_learning_launcher:
         annotation_config_path: str,
         training_config_path: str,
         n_iterations: int,
+        reference_pdb_path: Optional[str]=None,
+        template_sdf_path: Optional[str]=None,
+        restraint_mode: Literal["hard", "soft"]="hard",
         training_ratio: float=0.8,
         cluster_inference_batch_size: int=4,
         n_presimulation_steps_per_iteration: int=0,
@@ -72,6 +100,82 @@ class active_learning_launcher:
         self.n_presimulation_steps_per_iteration = n_presimulation_steps_per_iteration
         self.NA = None
         self.continual_learning = continual_learning
+        self.reference_pdb_path = reference_pdb_path
+        self.template_sdf_path = template_sdf_path
+        self.charge = None
+        self.backbone_indices = None
+        self.Calpha_indices = None
+        self.output_img_path = os.path.join(self.output_path, "cluster.png")
+        self.output_xyz_path = os.path.join(self.output_path, "cluster.xyz")
+        self.output_mol_path = os.path.join(self.output_path, "cluster.mol")
+        self.initial_xyz_path = None
+
+    def _get_topology(self) -> None:
+        if self.reference_pdb_path is not None and self.template_sdf_path is not None:
+            from rdkit.Chem import MolFromMolFile, MolToXYZFile, GetFormalCharge
+            enerzyme_subprocess = subprocess.Popen(
+                ["enerzyme", "bond",
+                    "-p", self.reference_pdb_path,
+                    "-t", self.template_sdf_path,
+                    "-i", self.output_img_path,
+                    "-m", self.output_mol_path,
+                ]
+            )
+            enerzyme_subprocess.wait()
+            cluster_mol = MolFromMolFile(self.output_mol_path, removeHs=False)
+            self.charge = GetFormalCharge(cluster_mol)
+            MolToXYZFile(cluster_mol, self.output_xyz_path)
+            self.initial_xyz_path = self.output_xyz_path
+
+            self.backbone_indices = []
+            self.Calpha_indices = []
+            atom_count = 0
+            with open(self.reference_pdb_path, "r") as f:
+                for line in f.readlines():
+                    if line.startswith("ATOM") or line.startswith("HETATM"):
+                        atom_count += 1
+                        resname = line[17:20]
+                        atomname = line[11:16].strip()
+                        if resname in resname_list:
+                            if atomname in ["N", "C", "CA", "O"]:
+                                self.backbone_indices.append(atom_count - 1)
+                                if atomname == "CA":
+                                    self.Calpha_indices.append(atom_count - 1)
+                        elif resname == "HOH":
+                            if atomname == "O":
+                                self.Calpha_indices.append(atom_count - 1)
+            with open(self.simulation_config_path, "r") as f:
+                simulation_config = yaml.load(f, Loader=yaml.FullLoader)
+                simulation_config["System"]["structure_file"] = self.initial_xyz_path
+                simulation_config["System"]["charge"] = self.charge
+                idx_start_from = simulation_config["Simulation"]["idx_start_from"]
+                if self.restraint_mode == "hard":
+                    simulation_config["Simulation"]["constraint"] = {
+                        "fix_atom": {
+                            "indices": [idx + idx_start_from for idx in self.backbone_indices]
+                        }
+                    }
+                elif self.restraint_mode == "soft":
+                    Hookean_k = simulation_config["Simulation"]["constraint"].get("Hookean_allpairs", {}).get("k", 0.05)
+                    simulation_config["Simulation"]["constraint"] = {
+                        "Hookean_allpairs": {
+                            "indices": [idx + idx_start_from for idx in self.Calpha_indices],
+                            "k": Hookean_k
+                        }
+                    }
+                simulation_config["sampling"]["params"]["plumed_config"]["reference_pdb_file"] = self.reference_pdb_file
+            with open(self.simulation_config_path, "w") as f:
+                yaml.dump(simulation_config, f, default_flow_style=False)
+            logger.info(f"Using total charge ({self.charge}) of the cluster parsed from the reference structure: {self.reference_pdb_path} with the small molecule template: {self.template_sdf_path}")
+            logger.info(f"Using initial structure: {self.initial_xyz_path} converted from the reference structure: {self.reference_pdb_path}")
+            
+            with open(self.extraction_config_path, "r") as f:
+                extraction_config = yaml.load(f, Loader=yaml.FullLoader)
+                extraction_config["Extractor"]["reference_mol_path"] = self.output_mol_path
+            with open(self.extraction_config_path, "w") as f:
+                yaml.dump(extraction_config, f, default_flow_style=False)
+            logger.info(f"Using topology information {self.output_mol_path} parsed from the reference structure: {self.reference_pdb_path} and the small molecule template: {self.template_sdf_path}")
+
 
     def _get_model_suffix(self, i: int) -> str:
         if not self.model_suffix:
@@ -504,6 +608,7 @@ class active_learning_launcher:
         logger.info(f"Training finished for {training_path}")
 
     def launch(self) -> None:
+        self._get_topology()
         self._get_model_config()
         initial_model_path = os.path.join(self.output_path, self._get_model_str(0))
         if not os.path.exists(initial_model_path):

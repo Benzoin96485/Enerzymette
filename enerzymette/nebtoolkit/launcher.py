@@ -19,6 +19,7 @@ class EnerzymeNEBLauncher:
         model_path: str,
         reference_path: str,
         server_config_path: str,
+        model_config_path: Optional[str]=None,
         n_images: int=25,
         port: int=5000,
         reactant_name: str="1a",
@@ -73,6 +74,7 @@ class EnerzymeNEBLauncher:
         self.local_minima_path = os.path.join(self.output_path, "local_minima")
         self.model_path = model_path
         self.server_config_path = server_config_path
+        self.model_config_path = model_config_path
         self.optimization_method = optimization_method
         self.ci_neb_pattern = re.compile(r"\s+" + self.optimization_method + r"\s+\d+\s+(\d+)\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+")
         self.port = find_available_port(start_port=port)
@@ -129,8 +131,12 @@ class EnerzymeNEBLauncher:
 
     def launch(self):
         # launch enerzyme server
+        if self.model_config_path is not None:
+            model_config_arg = ["-mc", self.model_config_path]
+        else:
+            model_config_arg = []
         enerzyme_subprocess = subprocess.Popen(
-            ["enerzyme", "listen", "-c", self.server_config_path, "-o", self.output_path, "-m", self.model_path, "-b", f"0.0.0.0:{self.port}"], 
+            ["enerzyme", "listen", "-c", self.server_config_path, "-o", self.output_path, "-m", self.model_path, "-b", f"0.0.0.0:{self.port}"] + model_config_arg, 
             cwd=self.output_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT
