@@ -102,6 +102,7 @@ class active_learning_launcher:
         self.continual_learning = continual_learning
         self.reference_pdb_path = reference_pdb_path
         self.template_sdf_path = template_sdf_path
+        self.restraint_mode = restraint_mode
         self.charge = None
         self.backbone_indices = None
         self.Calpha_indices = None
@@ -163,7 +164,7 @@ class active_learning_launcher:
                             "k": Hookean_k
                         }
                     }
-                simulation_config["sampling"]["params"]["plumed_config"]["reference_pdb_file"] = self.reference_pdb_file
+                simulation_config["Simulation"]["sampling"]["params"]["plumed_config"]["reference_pdb_file"] = self.reference_pdb_path
             with open(self.simulation_config_path, "w") as f:
                 yaml.dump(simulation_config, f, default_flow_style=False)
             logger.info(f"Using total charge ({self.charge}) of the cluster parsed from the reference structure: {self.reference_pdb_path} with the small molecule template: {self.template_sdf_path}")

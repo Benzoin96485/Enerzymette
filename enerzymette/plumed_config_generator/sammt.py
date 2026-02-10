@@ -2,13 +2,10 @@ from typing import List, Optional
 from ase import Atoms
 from ase.units import kJ, mol, fs, kcal
 
-def get_sammt_config(
+def get_sammt_basics(
     system: Atoms,
-    integrate_config: dict,
     idx_start_from: int,
     dump_interval: int,
-    upper_bound: float,
-    lower_bound: float,
     reference_pdb_file: Optional[str]=None,
     substrate: Optional[str]=None,
     nucleophile: Optional[str]=None,
@@ -43,13 +40,30 @@ def get_sammt_config(
     plumed_config.append(f"dsort: SORT ARG=d0,d1")
     plumed_config.append(f"uwall: UPPER_WALLS ARG=dsort.1 AT=3.0 KAPPA={1000 * kcal / mol}")
     plumed_config.append(f"dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO")
-    plumed_config.append(f"PRINT ARG=d0,d1,dsort.1,dd STRIDE={dump_interval}")
-    plumed_config.append(f"FLUSH STRIDE={dump_interval}")
     current_d0 = system.get_distance(index_sulphur - idx_start_from, index_methyl_carbon - idx_start_from)
     current_d1 = system.get_distance(index_methyl_carbon - idx_start_from, index_nucleophile - idx_start_from)
     current_dd = current_d1 - current_d0
-    interval = upper_bound - lower_bound
+    return plumed_config, current_dd
 
+
+def get_sammt_config(
+    system: Atoms,
+    integrate_config: dict,
+    idx_start_from: int,
+    dump_interval: int,
+    upper_bound: float,
+    lower_bound: float,
+    reference_pdb_file: Optional[str]=None,
+    substrate: Optional[str]=None,
+    nucleophile: Optional[str]=None,
+    index_sulphur: Optional[int]=None,
+    index_methyl_carbon: Optional[int]=None,
+    index_nucleophile: Optional[int]=None,
+    **kwargs
+) -> List[str]:
+    plumed_config, current_dd = get_sammt_basics(system, idx_start_from, dump_interval, reference_pdb_file, substrate, nucleophile, index_sulphur, index_methyl_carbon, index_nucleophile)
+    
+    interval = upper_bound - lower_bound
     n_step = integrate_config.get("n_step")
     moving_restraint_kappa = 1000 * kcal / mol
     moving_restraint_component = [f"mr: MOVINGRESTRAINT ARG=dd STEP0=0 AT0={current_dd} KAPPA0={moving_restraint_kappa}"]
@@ -76,4 +90,31 @@ def get_sammt_config(
         stage = len(moving_restraint_component)
         moving_restraint_component.append(f"STEP{stage}={n_step} AT{stage}={stop_dd}")
     plumed_config.append(" ".join(moving_restraint_component))
+    plumed_config.append(f"PRINT ARG=d0,d1,dsort.1,dd,mr.* STRIDE={dump_interval}")
+    plumed_config.append(f"FLUSH STRIDE={dump_interval}")
+    return plumed_config
+
+def get_naive_sammt_config(
+    system: Atoms,
+    integrate_config: dict,
+    idx_start_from: int,
+    dump_interval: int,
+    upper_bound: float,
+    lower_bound: float,
+    warmup_steps: int,
+    reference_pdb_file: Optional[str]=None,
+    substrate: Optional[str]=None,
+    nucleophile: Optional[str]=None,
+    index_sulphur: Optional[int]=None,
+    index_methyl_carbon: Optional[int]=None,
+    index_nucleophile: Optional[int]=None,
+    **kwargs
+) -> List[str]:
+    plumed_config, current_dd = get_sammt_basics(system, idx_start_from, dump_interval, reference_pdb_file, substrate, nucleophile, index_sulphur, index_methyl_carbon, index_nucleophile)
+    n_step = integrate_config.get("n_step")
+    moving_restraint_kappa = 1000 * kcal / mol
+    moving_restraint_component = f"mr: MOVINGRESTRAINT ARG=dd STEP0=0 AT0={current_dd} KAPPA0={moving_restraint_kappa} STEP1={warmup_steps} AT1={upper_bound} STEP2={n_step} AT2={lower_bound}"
+    plumed_config.append(moving_restraint_component)
+    plumed_config.append(f"PRINT ARG=d0,d1,dsort.1,dd,mr.* STRIDE={dump_interval}")
+    plumed_config.append(f"FLUSH STRIDE={dump_interval}")
     return plumed_config

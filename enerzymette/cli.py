@@ -183,10 +183,10 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-cl', '--continual_learning', action='store_true', default=False,
         help='continual learning'
     )
-    parser_enerzyme_active_learning.add_argument('-rp', '--reference_pdb_file', type=str,
+    parser_enerzyme_active_learning.add_argument('-rp', '--reference_pdb_path', type=str,
         help='reference pdb file path', default=None
     )
-    parser_enerzyme_active_learning.add_argument('-ts', '--template_sdf_file', type=str,
+    parser_enerzyme_active_learning.add_argument('-ts', '--template_sdf_path', type=str,
         help='template sdf file path', default=None
     )
     parser_enerzyme_active_learning.add_argument('-rm', '--restraint_mode', type=str,
@@ -272,8 +272,8 @@ def main():
             cluster_inference_batch_size=args.cluster_inference_batch_size,
             n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
             continual_learning=args.continual_learning,
-            reference_pdb_file=args.reference_pdb_file,
-            template_sdf_file=args.template_sdf_file,
+            reference_pdb_path=args.reference_pdb_path,
+            template_sdf_path=args.template_sdf_path,
             restraint_mode=args.restraint_mode,
         )
         launcher.launch()
