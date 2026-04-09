@@ -25,6 +25,7 @@ class EnerzymeScanLauncher:
         self.model_path = model_path
         self.reference_path = reference_path
         self.model_config_path = model_config_path
+        logger.info(f"Using model config: {self.model_config_path}")
         self.reactant_name = reactant_name
         self.product_name = product_name
         self.n_steps = n_steps
@@ -198,7 +199,7 @@ class EnerzymeScanLauncher:
             target_structure_path=target_structure_path
         )
         scan_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", scan_config_path, "-o", elementary_reaction_path, "-m", self.model_path]
+            ["enerzyme", "simulate", "-c", scan_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg
         )
         scan_subprocess.wait()
         logger.info(f"Scan finished for elementary reaction {elementary_reaction_path}")
@@ -225,7 +226,7 @@ class EnerzymeScanLauncher:
             config_path=product_opt_config_path
         )
         product_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", product_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path],
+            ["enerzyme", "simulate", "-c", product_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg,
         )
         product_subprocess.wait()
         product_path = os.path.join(elementary_reaction_path, "product.xyz")
