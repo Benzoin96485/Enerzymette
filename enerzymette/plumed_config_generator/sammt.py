@@ -1,6 +1,31 @@
-from typing import List, Optional
+from typing import List, Tuple, Optional
 from ase import Atoms
 from ase.units import kJ, mol, fs, kcal
+
+
+def get_sammt_index(
+    idx_start_from: int,
+    reference_pdb_file: str,
+    substrate: str,
+    nucleophile: str,
+) -> Tuple[int, int, int]:
+    with open(reference_pdb_file, "r") as f:
+        atom_count = 0
+        for line in f.readlines():
+            if line.startswith("ATOM") or line.startswith("HETATM"):
+                resname = line[17:20].strip()
+                atomname = line[11:16].strip()
+                if resname == "SAM":
+                    if atomname == "SD":
+                        index_sulphur = atom_count
+                    elif atomname == "CE":
+                        index_methyl_carbon = atom_count
+                elif resname == substrate:
+                    if atomname == nucleophile:
+                        index_nucleophile = atom_count
+                atom_count += 1
+    return index_sulphur + idx_start_from, index_methyl_carbon + idx_start_from, index_nucleophile + idx_start_from
+
 
 def get_sammt_basics(
     system: Atoms,
@@ -12,33 +37,19 @@ def get_sammt_basics(
     index_sulphur: Optional[int]=None,
     index_methyl_carbon: Optional[int]=None,
     index_nucleophile: Optional[int]=None,
+    max_bond_length: float=3.0,
     **kwargs
 ) -> List[str]:
     plumed_config = []
     if reference_pdb_file is not None:
-        idx_start_from = 1
-        with open(reference_pdb_file, "r") as f:
-            atom_count = 0
-            for line in f.readlines():
-                if line.startswith("ATOM") or line.startswith("HETATM"):
-                    atom_count += 1
-                    resname = line[17:20]
-                    atomname = line[11:16].strip()
-                    if resname == "SAM":
-                        if atomname == "SD":
-                            index_sulphur = atom_count
-                        elif atomname == "CE":
-                            index_methyl_carbon = atom_count
-                    elif resname == substrate:
-                        if atomname == nucleophile:
-                            index_nucleophile = atom_count
+        index_sulphur, index_methyl_carbon, index_nucleophile = get_sammt_index(idx_start_from, reference_pdb_file, substrate, nucleophile)
     if index_sulphur is None or index_methyl_carbon is None or index_nucleophile is None:
         raise ValueError("Index of sulphur, methyl carbon, and nucleophile must be provided")
     plumed_config.append(f"UNITS LENGTH=A TIME={0.001 / fs} ENERGY={1 / kJ * mol}")
     plumed_config.append(f"d0: DISTANCE ATOMS={index_sulphur + 1 - idx_start_from},{index_methyl_carbon + 1 - idx_start_from} NOPBC")
     plumed_config.append(f"d1: DISTANCE ATOMS={index_methyl_carbon + 1 - idx_start_from},{index_nucleophile + 1 - idx_start_from} NOPBC")
     plumed_config.append(f"dsort: SORT ARG=d0,d1")
-    plumed_config.append(f"uwall: UPPER_WALLS ARG=dsort.1 AT=3.0 KAPPA={1000 * kcal / mol}")
+    plumed_config.append(f"uwall: UPPER_WALLS ARG=dsort.1 AT={max_bond_length} KAPPA={1000 * kcal / mol}")
     plumed_config.append(f"dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO")
     current_d0 = system.get_distance(index_sulphur - idx_start_from, index_methyl_carbon - idx_start_from)
     current_d1 = system.get_distance(index_methyl_carbon - idx_start_from, index_nucleophile - idx_start_from)
@@ -59,9 +70,10 @@ def get_sammt_config(
     index_sulphur: Optional[int]=None,
     index_methyl_carbon: Optional[int]=None,
     index_nucleophile: Optional[int]=None,
+    max_bond_length: float=3.0,
     **kwargs
 ) -> List[str]:
-    plumed_config, current_dd = get_sammt_basics(system, idx_start_from, dump_interval, reference_pdb_file, substrate, nucleophile, index_sulphur, index_methyl_carbon, index_nucleophile)
+    plumed_config, current_dd = get_sammt_basics(system, idx_start_from, dump_interval, reference_pdb_file, substrate, nucleophile, index_sulphur, index_methyl_carbon, index_nucleophile, max_bond_length)
     
     interval = upper_bound - lower_bound
     n_step = integrate_config.get("n_step")
