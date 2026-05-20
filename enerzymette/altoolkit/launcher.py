@@ -62,7 +62,6 @@ resname_list = {
 
 class active_learning_launcher:
     def __init__(self,
-        pretrain_path: str,
         output_path: str,
         tmp_path: str,
         calculator_patch_key: str,
@@ -72,16 +71,21 @@ class active_learning_launcher:
         annotation_config_path: str,
         training_config_path: str,
         n_iterations: int,
+        pretrain_path: Optional[str]=None,
+        model_config_path: Optional[str]=None,
         reference_pdb_path: Optional[str]=None,
         template_sdf_path: Optional[str]=None,
         restraint_mode: Literal["hard", "soft"]="hard",
         training_ratio: float=0.8,
         cluster_inference_batch_size: int=4,
         n_presimulation_steps_per_iteration: int=0,
-        continual_learning: bool=False
+        continual_learning: bool=False,
+        reset_parameters: bool=False,
     ) -> None:
         self.pretrain_path = pretrain_path
         self.pretrain_config = None
+        self.model_config_path = model_config_path
+        self.reset_parameters = reset_parameters
         self.output_path = os.path.abspath(output_path)
         self.tmp_path = tmp_path
         self.calculator_patch = get_calculator_patch(calculator_patch_key)
@@ -112,16 +116,17 @@ class active_learning_launcher:
         self.initial_xyz_path = None
 
     def _get_topology(self) -> None:
-        if self.reference_pdb_path is not None and self.template_sdf_path is not None:
+        if self.reference_pdb_path is not None:
             from rdkit.Chem import MolFromMolFile, MolToXYZFile, GetFormalCharge
-            enerzyme_subprocess = subprocess.Popen(
-                ["enerzyme", "bond",
-                    "-p", self.reference_pdb_path,
-                    "-t", self.template_sdf_path,
-                    "-i", self.output_img_path,
-                    "-m", self.output_mol_path,
-                ]
-            )
+            enerzyme_bond_args = [
+                "enerzyme", "bond",
+                "-p", self.reference_pdb_path,
+                "-i", self.output_img_path,
+                "-m", self.output_mol_path,
+            ]
+            if self.template_sdf_path is not None:
+                enerzyme_bond_args.extend(["-t", self.template_sdf_path])
+            enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
             enerzyme_subprocess.wait()
             cluster_mol = MolFromMolFile(self.output_mol_path, removeHs=False)
             self.charge = GetFormalCharge(cluster_mol)
@@ -185,7 +190,10 @@ class active_learning_launcher:
             return f"{self.model_suffix}-{i}"
 
     def _get_model_config(self) -> None:
-        pretrain_config_path = os.path.join(self.pretrain_path, "config.yaml")
+        if self.pretrain_path is not None:  
+            pretrain_config_path = os.path.join(self.pretrain_path, "config.yaml")
+        else:
+            pretrain_config_path = self.model_config_path
         with open(pretrain_config_path, "r") as f:
             self.pretrain_config = yaml.load(f, Loader=yaml.FullLoader)
         active_model_key = None
@@ -466,10 +474,15 @@ class active_learning_launcher:
         with open(self.extraction_config_path, "r") as f:
             extraction_config = yaml.load(f, Loader=yaml.FullLoader)
         extraction_config["Datahub"]["data_path"] = collection_path
+        if i <= 0 and (self.reset_parameters or self.pretrain_path is None):
+            extraction_config["Extractor"]["extract_method"] = "random"
         with open(extraction_config_path, "w") as f:
             yaml.dump(extraction_config, f, default_flow_style=False)
 
-        self._make_model_config(i, extraction_model_config_path, new_trainer_config={"inference_batch_size": self.cluster_inference_batch_size})
+        new_trainer_config = {
+            "inference_batch_size": self.cluster_inference_batch_size
+        }
+        self._make_model_config(i, extraction_model_config_path, new_trainer_config=new_trainer_config)
 
         enerzyme_subprocess = subprocess.Popen(
             ["enerzyme", "extract", 
@@ -584,6 +597,8 @@ class active_learning_launcher:
                 "refresh_patience": True,
                 "refresh_best_score": True
             })
+        if self.reset_parameters and i <= 0:
+            new_trainer_config["reset_parameters"] = True
         self._make_model_config(i + 1,
             dump_path=training_config_path, 
             new_config_path=self.training_config_path,
@@ -612,7 +627,7 @@ class active_learning_launcher:
         self._get_topology()
         self._get_model_config()
         initial_model_path = os.path.join(self.output_path, self._get_model_str(0))
-        if not os.path.exists(initial_model_path):
+        if self.pretrain_path is not None and not os.path.exists(initial_model_path):
             os.symlink(os.path.join(self.pretrain_path, self._get_model_str()), initial_model_path)
 
         for i in range(self.n_iterations):

@@ -142,7 +142,13 @@ def get_parser():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser_enerzyme_active_learning.add_argument('-p', '--pretrain', type=str,
-        help='pretrain path'
+        help='pretrain path', default=None
+    )
+    parser_enerzyme_active_learning.add_argument('-mc', '--model_config', type=str,
+        help='model config path', default=None
+    )
+    parser_enerzyme_active_learning.add_argument('--reset_parameters', action='store_true', default=False,
+        help='reset pretrained model parameters'
     )
     parser_enerzyme_active_learning.add_argument('-o', '--output', type=str,
         help='output path', default="."
@@ -259,6 +265,7 @@ def main():
         from .altoolkit.launcher import active_learning_launcher
         launcher = active_learning_launcher(
             pretrain_path=args.pretrain,
+            model_config_path=args.model_config,
             output_path=args.output,
             tmp_path=args.tmp,
             calculator_patch_key=args.calculator_patch,
@@ -275,6 +282,7 @@ def main():
             reference_pdb_path=args.reference_pdb_path,
             template_sdf_path=args.template_sdf_path,
             restraint_mode=args.restraint_mode,
+            reset_parameters=args.reset_parameters,
         )
         launcher.launch()
     else:
