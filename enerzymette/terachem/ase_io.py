@@ -132,8 +132,10 @@ def read_terachem_outputs(directory, stdout_path):
     return results
 
 
-def read_terachem_scan_optim_xyz(terachem_scan_optim_xyz_file: str) -> List[float]:
+def read_terachem_scan_optim_xyz(terachem_scan_optim_xyz_file: str, charge: int=0, spin: int=1) -> List[float]:
     atoms = ase.io.read(terachem_scan_optim_xyz_file, format="extxyz", index=":", properties_parser=lambda x: {
-        "energy": float(x.split()[4]) * Hartree
+        "energy": float(x.split()[4]) * Hartree,
+        "charge": charge,
+        "spin": spin,
     })
     return atoms
