@@ -1,5 +1,5 @@
 import subprocess, sys, traceback, os, shutil
-from typing import Optional
+from typing import Optional, List
 import yaml, json
 from glob import glob
 import ase
@@ -7,6 +7,11 @@ import ase.io
 from ase.units import kcal, mol
 from ..logger import logger
 from ..mep_util import find_intermediate_indices, find_ci_index, find_rate_determining_step, find_new_name
+from ..plumed_config_generator import (
+    get_plumed_patch,
+    get_scan_config_generator_name,
+    resolve_scan_endpoints,
+)
 
 class EnerzymeScanLauncher:
     def __init__(self,
@@ -18,6 +23,8 @@ class EnerzymeScanLauncher:
         reactant_name: str="1a",
         product_name: str="2a",
         n_steps: int=25,
+        plumed_patch_key: Optional[str]=None,
+        plumed_cv_config: Optional[dict]=None,
     ):
         self.reactant_path = reactant_path
         self.output_path = output_path
@@ -29,9 +36,14 @@ class EnerzymeScanLauncher:
         self.reactant_name = reactant_name
         self.product_name = product_name
         self.n_steps = n_steps
+        self.plumed_patch_key = plumed_patch_key
+        self.plumed_cv_config = plumed_cv_config or {}
+        self.plumed_patch = get_plumed_patch(plumed_patch_key) if plumed_patch_key is not None else None
         self.reference = self.parse_reference(reference_path, "terachem_input")
         self.constraint_freeze_xyz = self.reference.get("constraint_freeze", {}).get("xyz", [])
         self.constraint_scan = self.reference.get("constraint_scan", {})
+        if plumed_patch_key is not None:
+            logger.info(f"Using PLUMED CV-plugin scan mode (patch: {plumed_patch_key})")
         logger.info(f"Constraint freeze xyz: {self.constraint_freeze_xyz}")
         self.charge = int(self.reference.get("main", {}).get("charge", 0))
         logger.info(f"Charge: {self.charge}")
@@ -181,7 +193,7 @@ class EnerzymeScanLauncher:
         else:
             model_config_arg = []
         opt_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", reactant_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg
+            self._enerzyme_simulate_cmd(reactant_opt_config_path, elementary_reaction_path, model_config_arg)
         )
         opt_subprocess.wait()
         opt_path = os.path.join(elementary_reaction_path, "optim.xyz")
@@ -191,15 +203,19 @@ class EnerzymeScanLauncher:
         
         # flexible scan
         scan_config_path = os.path.join(elementary_reaction_path, "scan.yaml")
+        scan_task = "plumed_scan" if self.plumed_patch_key is not None else "scan"
         self.write_config(
-            task="scan",
+            task=scan_task,
             initial_structure_path=reactant_path,
             config_path=scan_config_path,
             target_value=target_value,
             target_structure_path=target_structure_path
         )
         scan_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", scan_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg
+            self._enerzyme_simulate_cmd(
+                scan_config_path, elementary_reaction_path, model_config_arg,
+                with_plumed_patch=(self.plumed_patch_key is not None),
+            )
         )
         scan_subprocess.wait()
         logger.info(f"Scan finished for elementary reaction {elementary_reaction_path}")
@@ -226,7 +242,7 @@ class EnerzymeScanLauncher:
             config_path=product_opt_config_path
         )
         product_subprocess = subprocess.Popen(
-            ["enerzyme", "simulate", "-c", product_opt_config_path, "-o", elementary_reaction_path, "-m", self.model_path] + model_config_arg,
+            self._enerzyme_simulate_cmd(product_opt_config_path, elementary_reaction_path, model_config_arg),
         )
         product_subprocess.wait()
         product_path = os.path.join(elementary_reaction_path, "product.xyz")
@@ -238,6 +254,23 @@ class EnerzymeScanLauncher:
             "mep_path_info": mep_path_info,
             "ci_index": ci_index,
         }
+
+    def _enerzyme_simulate_cmd(
+        self,
+        config_path: str,
+        output_path: str,
+        model_config_arg: List[str],
+        with_plumed_patch: bool = False,
+    ) -> List[str]:
+        cmd = [
+            "enerzyme", "simulate",
+            "-c", config_path,
+            "-o", output_path,
+            "-m", self.model_path,
+        ] + model_config_arg
+        if with_plumed_patch and self.plumed_patch is not None:
+            cmd.extend(["-pp", self.plumed_patch])
+        return cmd
 
     def write_config(self, 
         task: str,
@@ -269,7 +302,37 @@ class EnerzymeScanLauncher:
                 "multiplicity": self.multiplicity,
             }
         }
-        if task == "scan":
+        if task == "plumed_scan":
+            if self.plumed_patch_key is None:
+                raise ValueError("plumed_scan task requires plumed_patch_key")
+            idx_start_from = base_config["Simulation"]["idx_start_from"]
+            initial_structure = ase.io.read(initial_structure_path, index=-1)
+            x0, x1, num, rc = resolve_scan_endpoints(
+                initial_structure,
+                idx_start_from,
+                self.plumed_patch_key,
+                self.plumed_cv_config,
+                self.n_steps,
+                target_value=target_value,
+                target_structure_path=target_structure_path,
+            )
+            base_config["Simulation"]["plumed_config_generator"] = {
+                "name": get_scan_config_generator_name(self.plumed_patch_key),
+            }
+            base_config["Simulation"]["sampling"] = {
+                "cv": "plumed",
+                "params": {
+                    "x0": float(x0),
+                    "x1": float(x1),
+                    "num": num,
+                    "plumed_config": dict(self.plumed_cv_config),
+                },
+            }
+            logger.info(
+                f"PLUMED scan on CV {rc.cv_name} from {x0} to {x1} "
+                f"(bounds [{rc.lower_bound}, {rc.upper_bound}]) with {num} steps"
+            )
+        elif task == "scan":
             for constraint_type in self.constraint_scan.keys():
                 constraint_params = self.constraint_scan[constraint_type]
                 if constraint_type == "bond":

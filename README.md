@@ -67,6 +67,7 @@ Then run the ORCA job as usual.
 
 ## Enerzyme Scan Launcher
 
+Flexible reaction-coordinate scans and PLUMED steered MD use CV plugins under `enerzymette/plumed_config_generator/`. See [plumed_config_generator/README.md](enerzymette/plumed_config_generator/README.md) for the plugin contract, `task: plumed_scan` / `sampling.cv: plumed` YAML schema, and active-learning `--initial-scan` options.
 
 ## Enerzyme NEB Launcher
 

@@ -1,10 +1,20 @@
-import os, subprocess, pickle, copy, sys, shutil, glob
+import os, subprocess, pickle, copy, sys, shutil, glob, json
 from random import shuffle
-from typing import Tuple, Optional, Dict, Callable, Literal
+from typing import Tuple, Optional, Dict, Callable, Literal, List
 import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
-from ..plumed_config_generator import get_plumed_patch
+from ..plumed_config_generator import (
+    get_plumed_patch,
+    get_scan_config_generator_name,
+    resolve_scan_endpoints,
+)
+from ..mep_util import (
+    find_intermediate_indices,
+    find_ci_index,
+    find_rate_determining_step,
+    find_new_name,
+)
 from ..logger import logger
 
 
@@ -75,12 +85,15 @@ class active_learning_launcher:
         model_config_path: Optional[str]=None,
         reference_pdb_path: Optional[str]=None,
         template_sdf_path: Optional[str]=None,
+        initial_xyz_path: Optional[str]=None,
         restraint_mode: Literal["hard", "soft"]="hard",
         training_ratio: float=0.8,
         cluster_inference_batch_size: int=4,
         n_presimulation_steps_per_iteration: int=0,
         continual_learning: bool=False,
         reset_parameters: bool=False,
+        initial_scan: bool=False,
+        n_initial_scan_steps: int=25,
     ) -> None:
         self.pretrain_path = pretrain_path
         self.pretrain_config = None
@@ -89,6 +102,7 @@ class active_learning_launcher:
         self.output_path = os.path.abspath(output_path)
         self.tmp_path = tmp_path
         self.calculator_patch = get_calculator_patch(calculator_patch_key)
+        self.plumed_patch_key = plumed_patch_key
         self.plumed_patch = get_plumed_patch(plumed_patch_key)
         self.simulation_config_path = simulation_config_path
         self.extraction_config_path = extraction_config_path
@@ -102,6 +116,9 @@ class active_learning_launcher:
         self.training_ratio = training_ratio
         self.cluster_inference_batch_size = cluster_inference_batch_size
         self.n_presimulation_steps_per_iteration = n_presimulation_steps_per_iteration
+        self.initial_scan = initial_scan
+        self.n_initial_scan_steps = n_initial_scan_steps
+        self.structure_pool_state: Optional[Dict] = None
         self.NA = None
         self.continual_learning = continual_learning
         self.reference_pdb_path = reference_pdb_path
@@ -113,7 +130,7 @@ class active_learning_launcher:
         self.output_img_path = os.path.join(self.output_path, "cluster.png")
         self.output_xyz_path = os.path.join(self.output_path, "cluster.xyz")
         self.output_mol_path = os.path.join(self.output_path, "cluster.mol")
-        self.initial_xyz_path = None
+        self.initial_xyz_path = initial_xyz_path
 
     def _get_topology(self) -> None:
         if self.reference_pdb_path is not None:
@@ -130,8 +147,9 @@ class active_learning_launcher:
             enerzyme_subprocess.wait()
             cluster_mol = MolFromMolFile(self.output_mol_path, removeHs=False)
             self.charge = GetFormalCharge(cluster_mol)
-            MolToXYZFile(cluster_mol, self.output_xyz_path)
-            self.initial_xyz_path = self.output_xyz_path
+            if self.initial_xyz_path is None:
+                MolToXYZFile(cluster_mol, self.output_xyz_path)
+                self.initial_xyz_path = self.output_xyz_path
 
             self.backbone_indices = []
             self.Calpha_indices = []
@@ -348,6 +366,392 @@ class active_learning_launcher:
             new_layers.append(layer)
         model_param["layers"] = new_layers
 
+    def _structure_pool_state_path(self) -> str:
+        return os.path.join(self.output_path, "structure_pool.json")
+
+    def _structure_pool_dir(self) -> str:
+        return os.path.join(self.output_path, "structure_pool")
+
+    def _load_structure_pool(self) -> Dict:
+        state_path = self._structure_pool_state_path()
+        if os.path.exists(state_path):
+            with open(state_path, "r") as f:
+                return json.load(f)
+        return {"entries": []}
+
+    def _save_structure_pool(self) -> None:
+        with open(self._structure_pool_state_path(), "w") as f:
+            json.dump(self.structure_pool_state, f, indent=2)
+
+    def _write_task_config(
+        self,
+        task: str,
+        structure_path: str,
+        config_path: str,
+        base_config: Dict,
+        scan_target_value: Optional[float] = None,
+        scan_target_structure_path: Optional[str] = None,
+    ) -> None:
+        config = copy.deepcopy(base_config)
+        config["System"]["structure_file"] = structure_path
+        config["Simulation"]["task"] = task
+        config["Simulation"].pop("uncertainty_calculator", None)
+
+        if task == "opt":
+            config["Simulation"].pop("sampling", None)
+            config["Simulation"].pop("integrate", None)
+            if "optimize" not in config["Simulation"]:
+                config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
+        elif task == "md":
+            config["Simulation"].pop("sampling", None)
+            config["Simulation"]["integrate"]["n_step"] = self.n_presimulation_steps_per_iteration
+        elif task == "plumed_scan":
+            idx_start_from = config["Simulation"]["idx_start_from"]
+            plumed_cv_config = config["Simulation"]["sampling"]["params"]["plumed_config"]
+            initial_structure = ase.io.read(structure_path, index=-1)
+            x0, x1, num, rc = resolve_scan_endpoints(
+                initial_structure,
+                idx_start_from,
+                self.plumed_patch_key,
+                plumed_cv_config,
+                self.n_initial_scan_steps,
+                target_value=scan_target_value,
+                target_structure_path=scan_target_structure_path,
+            )
+            config["Simulation"]["plumed_config_generator"] = {
+                "name": get_scan_config_generator_name(self.plumed_patch_key),
+            }
+            config["Simulation"]["sampling"] = {
+                "cv": "plumed",
+                "params": {
+                    "x0": float(x0),
+                    "x1": float(x1),
+                    "num": num,
+                    "plumed_config": dict(plumed_cv_config),
+                },
+            }
+            logger.info(
+                f"PLUMED scan on CV {rc.cv_name} from {x0} to {x1} "
+                f"(bounds [{rc.lower_bound}, {rc.upper_bound}]) with {num} steps"
+            )
+
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+
+    def _enerzyme_simulate_cmd(
+        self,
+        config_path: str,
+        output_path: str,
+        model_config_path: str,
+        with_plumed_patch: bool = False,
+    ) -> List[str]:
+        cmd = [
+            "enerzyme", "simulate",
+            "-c", config_path,
+            "-o", output_path,
+            "-m", self.output_path,
+            "-cp", self.calculator_patch,
+            "-mc", model_config_path,
+        ]
+        if with_plumed_patch:
+            cmd.extend(["-pp", self.plumed_patch])
+        return cmd
+
+    def _copy_initial_scan_local_minima(
+        self,
+        local_minima_path: str,
+        reactant_name: str,
+        product_name: str,
+        elementary_reaction_path: str,
+    ) -> None:
+        reactant_src = os.path.join(elementary_reaction_path, "reactant.xyz")
+        product_src = os.path.join(elementary_reaction_path, "product.xyz")
+        if os.path.exists(reactant_src):
+            shutil.copy(
+                reactant_src,
+                os.path.join(local_minima_path, "reactant", f"{reactant_name}.xyz"),
+            )
+        if os.path.exists(product_src):
+            shutil.copy(
+                product_src,
+                os.path.join(local_minima_path, "product", f"{product_name}.xyz"),
+            )
+
+    def _launch_elementary_reaction_scan(
+        self,
+        reactant_path: str,
+        elementary_reaction_path: str,
+        base_config: Dict,
+        model_config_path: str,
+        target_value: Optional[float] = None,
+        target_structure_path: Optional[str] = None,
+    ) -> Dict:
+        if os.path.exists(elementary_reaction_path):
+            logger.warning(
+                f"Output path {elementary_reaction_path} already exists, it could be overwritten"
+            )
+        else:
+            os.makedirs(elementary_reaction_path)
+
+        reactant_atoms = ase.io.read(reactant_path, index=-1)
+        init_reactant_path = os.path.join(elementary_reaction_path, "init_reactant.xyz")
+        ase.io.write(init_reactant_path, reactant_atoms, format="extxyz")
+
+        reactant_opt_config_path = os.path.join(elementary_reaction_path, "reactant_opt.yaml")
+        self._write_task_config("opt", init_reactant_path, reactant_opt_config_path, base_config)
+        subprocess.Popen(
+            self._enerzyme_simulate_cmd(reactant_opt_config_path, elementary_reaction_path, model_config_path),
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        ).wait()
+        opt_path = os.path.join(elementary_reaction_path, "optim.xyz")
+        optimized_reactant_path = os.path.join(elementary_reaction_path, "reactant.xyz")
+        os.rename(opt_path, optimized_reactant_path)
+
+        scan_config_path = os.path.join(elementary_reaction_path, "scan.yaml")
+        self._write_task_config(
+            "plumed_scan",
+            optimized_reactant_path,
+            scan_config_path,
+            base_config,
+            scan_target_value=target_value,
+            scan_target_structure_path=target_structure_path,
+        )
+        subprocess.Popen(
+            self._enerzyme_simulate_cmd(
+                scan_config_path, elementary_reaction_path, model_config_path, with_plumed_patch=True
+            ),
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        ).wait()
+
+        scan_atoms = ase.io.read(
+            os.path.join(elementary_reaction_path, "scan_optim.xyz"), format="extxyz", index=":"
+        )
+        energies = [atoms.get_potential_energy() for atoms in scan_atoms]
+        intermediate_indices = find_intermediate_indices(energies)
+        ci_index = find_ci_index(energies)
+        _, product_index, _ = find_rate_determining_step(intermediate_indices, energies, ci_index)
+
+        scan_product_path = os.path.join(elementary_reaction_path, "init_product.xyz")
+        ase.io.write(scan_product_path, scan_atoms[product_index], format="extxyz")
+        product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
+        self._write_task_config("opt", scan_product_path, product_opt_config_path, base_config)
+        subprocess.Popen(
+            self._enerzyme_simulate_cmd(product_opt_config_path, elementary_reaction_path, model_config_path),
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        ).wait()
+        os.rename(opt_path, os.path.join(elementary_reaction_path, "product.xyz"))
+
+        return {
+            "intermediate_indices": intermediate_indices,
+            "mep_path_info": {"atoms": scan_atoms, "energies": energies},
+            "ci_index": ci_index,
+        }
+
+    def _run_initial_scan(self) -> None:
+        initial_scan_path = os.path.join(self.output_path, "initial_scan")
+        local_minima_path = os.path.join(initial_scan_path, "local_minima")
+        completed_flag = os.path.join(initial_scan_path, "initial_scan_completed")
+        if os.path.exists(completed_flag):
+            logger.info(f"Initial scan already completed at {initial_scan_path}, skipping.")
+            return
+
+        os.makedirs(os.path.join(local_minima_path, "reactant"), exist_ok=True)
+        os.makedirs(os.path.join(local_minima_path, "product"), exist_ok=True)
+
+        model_config_path = os.path.join(initial_scan_path, "model_config.yaml")
+        if not os.path.exists(model_config_path):
+            self._make_model_config(0, model_config_path)
+
+        with open(self.simulation_config_path, "r") as f:
+            base_config = yaml.load(f, Loader=yaml.FullLoader)
+
+        reactant_names = ["1a"]
+        product_names = ["2a"]
+        current_reactant_name = reactant_names[0]
+        current_product_name = product_names[0]
+        current_reactant_path = base_config["System"]["structure_file"]
+        last_product_path = None
+
+        csv_path = os.path.join(initial_scan_path, "scan.csv")
+        with open(csv_path, "w") as csv_fp:
+            csv_fp.write("reactant,product\n")
+            while True:
+                reaction_name = f"{current_reactant_name}-{current_product_name}"
+                elementary_reaction_path = os.path.join(initial_scan_path, reaction_name)
+                csv_fp.write(f"{current_reactant_name},{current_product_name}\n")
+                csv_fp.flush()
+
+                elementary_reaction_info = self._launch_elementary_reaction_scan(
+                    current_reactant_path,
+                    elementary_reaction_path,
+                    base_config,
+                    model_config_path,
+                    target_structure_path=last_product_path,
+                )
+                self._copy_initial_scan_local_minima(
+                    local_minima_path,
+                    current_reactant_name,
+                    current_product_name,
+                    elementary_reaction_path,
+                )
+                last_product_path = os.path.join(elementary_reaction_path, "product.xyz")
+
+                intermediate_indices = elementary_reaction_info["intermediate_indices"]
+                mep_path_info = elementary_reaction_info["mep_path_info"]
+                ci_index = elementary_reaction_info["ci_index"]
+
+                if len(intermediate_indices) > 0:
+                    reactant_index, _, _ = find_rate_determining_step(
+                        intermediate_indices, mep_path_info["energies"], ci_index
+                    )
+                    current_reactant_path = os.path.join(
+                        elementary_reaction_path, f"{reaction_name}-{reactant_index}.xyz"
+                    )
+                    ase.io.write(
+                        current_reactant_path,
+                        mep_path_info["atoms"][reactant_index],
+                        format="extxyz",
+                    )
+                    if reactant_index != 0:
+                        current_reactant_name = find_new_name(reactant_names)
+                        reactant_names.append(current_reactant_name)
+                    current_product_name = find_new_name(product_names)
+                    product_names.append(current_product_name)
+                else:
+                    logger.info(f"Initial scan converged for reaction {reaction_name}")
+                    break
+
+        open(completed_flag, "w").close()
+        logger.info(f"Initial scan finished at {initial_scan_path}")
+
+    def _build_structure_pool_from_initial_scan(self) -> None:
+        initial_scan_path = os.path.join(self.output_path, "initial_scan")
+        local_minima_path = os.path.join(initial_scan_path, "local_minima")
+        pool_dir = self._structure_pool_dir()
+        os.makedirs(pool_dir, exist_ok=True)
+
+        pool_entries = []
+        csv_path = os.path.join(initial_scan_path, "scan.csv")
+        with open(csv_path, "r") as f:
+            lines = f.readlines()[1:]
+        pool_idx = 0
+        for line in lines:
+            reactant_name, product_name = line.strip().split(",")
+            for name, subdir in ((reactant_name, "reactant"), (product_name, "product")):
+                src = os.path.join(local_minima_path, subdir, f"{name}.xyz")
+                if not os.path.exists(src):
+                    logger.warning(f"Local minimum not found for initial scan: {src}")
+                    continue
+                dst = os.path.join(pool_dir, f"{pool_idx:03d}.xyz")
+                shutil.copy(src, dst)
+                pool_entries.append({"path": dst, "run": False})
+                pool_idx += 1
+
+        if not pool_entries:
+            raise RuntimeError(
+                f"Initial scan produced no local minima under {local_minima_path}"
+            )
+        self.structure_pool_state = {"entries": pool_entries}
+        self._save_structure_pool()
+        logger.info(
+            f"Structure pool initialized with {len(pool_entries)} entries from initial scan"
+        )
+
+    def _init_structure_pool(self) -> None:
+        state_path = self._structure_pool_state_path()
+        if os.path.exists(state_path):
+            self.structure_pool_state = self._load_structure_pool()
+            logger.info(
+                f"Loaded structure pool with {len(self.structure_pool_state['entries'])} entries"
+            )
+            return
+
+        if self.initial_scan:
+            self._run_initial_scan()
+            self._build_structure_pool_from_initial_scan()
+            return
+
+        with open(self.simulation_config_path, "r") as f:
+            simulation_config = yaml.load(f, Loader=yaml.FullLoader)
+        initial_path = os.path.abspath(simulation_config["System"]["structure_file"])
+        pool_dir = self._structure_pool_dir()
+        os.makedirs(pool_dir, exist_ok=True)
+        pool_path = os.path.join(pool_dir, "000.xyz")
+        if os.path.abspath(initial_path) != os.path.abspath(pool_path):
+            shutil.copy(initial_path, pool_path)
+        self.structure_pool_state = {"entries": [{"path": pool_path, "run": False}]}
+        self._save_structure_pool()
+        logger.info(f"Structure pool initialized with initial structure: {pool_path}")
+
+    def _prepare_iteration_initial_structure(
+        self,
+        i: int,
+        initial_structure_path: str,
+        simulation_path: str,
+        presimulation_config_path: str,
+        presimulation_trajectory_path: str,
+        presimulation_completed_flag: str,
+        simulation_model_config_path: str,
+        simulation_config: Dict,
+    ) -> None:
+        entries = self.structure_pool_state["entries"]
+        pool_idx = i % len(entries)
+        entry = entries[pool_idx]
+
+        if not entry["run"]:
+            shutil.copy(entry["path"], initial_structure_path)
+            entry["run"] = True
+            self._save_structure_pool()
+            logger.info(
+                f"Iteration {i}: using structure pool entry {pool_idx} directly "
+                f"({entry['path']})"
+            )
+            return
+
+        if self.n_presimulation_steps_per_iteration > 0:
+            if os.path.exists(presimulation_completed_flag):
+                logger.info(f"Presimulation completed for {simulation_path} and skipped.")
+            else:
+                presimulation_config = copy.deepcopy(simulation_config)
+                presimulation_config["Simulation"].pop("sampling", None)
+                presimulation_config["Simulation"]["task"] = "md"
+                presimulation_config["Simulation"]["integrate"]["n_step"] = (
+                    self.n_presimulation_steps_per_iteration
+                )
+                presimulation_config["System"]["structure_file"] = entry["path"]
+                with open(presimulation_config_path, "w") as f:
+                    yaml.dump(presimulation_config, f, default_flow_style=False)
+                subprocess.Popen(
+                    self._enerzyme_simulate_cmd(
+                        presimulation_config_path,
+                        simulation_path,
+                        simulation_model_config_path,
+                    ),
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                ).wait()
+                if os.path.exists(presimulation_trajectory_path):
+                    open(presimulation_completed_flag, "w").close()
+            last_frame = ase.io.read(presimulation_trajectory_path, index=-1)
+            ase.io.write(entry["path"], last_frame, format="extxyz")
+            ase.io.write(initial_structure_path, last_frame, format="extxyz")
+            self._save_structure_pool()
+            logger.info(
+                f"Iteration {i}: presimulation from pool entry {pool_idx}, "
+                f"updated entry at {entry['path']}"
+            )
+            return
+
+        last_simulation_trajectory_path = self._get_simulation_path(i - 1)[1]
+        last_frame = ase.io.read(last_simulation_trajectory_path, index=-1)
+        ase.io.write(initial_structure_path, last_frame, format="extxyz")
+        logger.info(
+            f"Iteration {i}: reusing last steered-MD frame from iteration {i - 1}"
+        )
+
     def _simulation_step(self, i: int) -> None:
         simulation_path, simulation_trajectory_path, simulation_config_path, simulation_model_config_path, simulation_completed_flag, initial_structure_path, presimulation_config_path, presimulation_trajectory_path, presimulation_completed_flag = self._get_simulation_path(i)
 
@@ -363,22 +767,15 @@ class active_learning_launcher:
         with open(self.simulation_config_path, "r") as f:
             simulation_config = yaml.load(f, Loader=yaml.FullLoader)
         if i == 0:
-            # no uncertainty analysis
-            simulation_config["Simulation"].pop("uncertainty_calculator")
-            shutil.copy(simulation_config["System"]["structure_file"], initial_structure_path)
+            simulation_config["Simulation"].pop("uncertainty_calculator", None)
         else:
             average_E_var = self._get_max_E_var(i)
-            with open(self.simulation_config_path, "r") as f:
-                simulation_config = yaml.load(f, Loader=yaml.FullLoader)
-
             if self.NA is None:
                 initial_structure = ase.io.read(simulation_config["System"]["structure_file"])
                 self.NA = len(initial_structure)
                 logger.info(f"Initial structure has {self.NA} atoms.")
-            
             simulation_config["Simulation"]["uncertainty_calculator"]["params"]["B"] = average_E_var / self.NA
 
-            
         simulation_config["System"]["structure_file"] = initial_structure_path
 
         with open(simulation_config_path, "w") as f:
@@ -386,40 +783,16 @@ class active_learning_launcher:
 
         self._make_model_config(i, simulation_model_config_path, model_params_updater=self._udd_model_params_updater)
 
-        if i > 0:
-            if self.n_presimulation_steps_per_iteration > 0:
-                if os.path.exists(presimulation_completed_flag):
-                    logger.info(f"Presimulation completed for {simulation_path} and skipped.")
-                else:
-                    last_initial_structure_path = self._get_simulation_path(i - 1)[5]
-                    presimulation_config = copy.deepcopy(simulation_config)
-                    presimulation_config["Simulation"].pop("sampling")
-                    presimulation_config["Simulation"]["task"] = "md"
-                    presimulation_config["Simulation"]["integrate"]["n_step"] = self.n_presimulation_steps_per_iteration
-                    presimulation_config["System"]["structure_file"] = last_initial_structure_path
-                    with open(presimulation_config_path, "w") as f:
-                        yaml.dump(presimulation_config, f, default_flow_style=False)
-                    enerzyme_subprocess = subprocess.Popen(
-                        ["enerzyme", "simulate", 
-                            "-c", presimulation_config_path, 
-                            "-o", simulation_path, 
-                            "-m", self.output_path, 
-                            "-cp", self.calculator_patch,
-                            "-mc", simulation_model_config_path
-                        ],
-                        stdout=sys.stdout,
-                        stderr=sys.stderr
-                    )
-                    enerzyme_subprocess.wait()
-                    if os.path.exists(presimulation_trajectory_path):
-                        open(presimulation_completed_flag, "w").close()
-                last_frame = ase.io.read(presimulation_trajectory_path, index=-1)
-                logger.info(f"Presimulation finished for {simulation_path}")
-            else:
-                last_simulation_trajectory_path = self._get_simulation_path(i - 1)[1]
-                last_frame = ase.io.read(last_simulation_trajectory_path, index=-1)
-            
-            ase.io.write(initial_structure_path, last_frame, format="extxyz")
+        self._prepare_iteration_initial_structure(
+            i,
+            initial_structure_path,
+            simulation_path,
+            presimulation_config_path,
+            presimulation_trajectory_path,
+            presimulation_completed_flag,
+            simulation_model_config_path,
+            simulation_config,
+        )
 
         enerzyme_subprocess = subprocess.Popen(
             ["enerzyme", "simulate", 
@@ -629,6 +1002,8 @@ class active_learning_launcher:
         initial_model_path = os.path.join(self.output_path, self._get_model_str(0))
         if self.pretrain_path is not None and not os.path.exists(initial_model_path):
             os.symlink(os.path.join(self.pretrain_path, self._get_model_str()), initial_model_path)
+
+        self._init_structure_pool()
 
         for i in range(self.n_iterations):
             # simulation step

@@ -1,4 +1,5 @@
 import argparse
+import yaml
 
 
 def get_parser():
@@ -121,6 +122,12 @@ def get_parser():
     parser_launch_enerzyme_scan.add_argument('-n', '--n_steps', type=int,
         help='number of steps', default=25
     )
+    parser_launch_enerzyme_scan.add_argument('-pp', '--plumed_patch', type=str, default=None,
+        help='PLUMED CV plugin key (e.g. sammt); enables plumed_scan instead of ASE bond scan'
+    )
+    parser_launch_enerzyme_scan.add_argument('-psc', '--plumed_cv_config', type=str, default=None,
+        help='YAML file with CV-plugin params (bounds, dump_interval, reference_pdb_file, etc.)'
+    )
     parser_update_terachem_scan = subparsers.add_parser(
         "update_terachem_scan",
         help="Update a terachem scan input file",
@@ -183,6 +190,12 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-np', '--n_presimulation_steps_per_iteration', type=int,
         help='number of presimulation steps per iteration', default=0
     )
+    parser_enerzyme_active_learning.add_argument('--initial-scan', action='store_true', default=False,
+        help='run iterative flexible scan before AL to seed the structure pool'
+    )
+    parser_enerzyme_active_learning.add_argument('-nis', '--n_initial_scan_steps', type=int,
+        help='number of scan steps per elementary reaction in initial scan', default=25
+    )
     parser_enerzyme_active_learning.add_argument('-b', '--cluster_inference_batch_size', type=int,
         help='cluster inference batch size', default=4
     )
@@ -197,6 +210,9 @@ def get_parser():
     )
     parser_enerzyme_active_learning.add_argument('-rm', '--restraint_mode', type=str,
         help='restraint mode', default="hard"
+    )
+    parser_enerzyme_active_learning.add_argument('-ix', '--initial_xyz_path', type=str,
+        help='initial xyz file path', default=None
     )
     args = parser.parse_args()
     return args
@@ -245,6 +261,12 @@ def main():
         launcher.launch()
     elif args.command == "enerzyme_scan":
         from .scantoolkit.launcher import EnerzymeScanLauncher
+        plumed_cv_config = None
+        if args.plumed_cv_config is not None:
+            with open(args.plumed_cv_config, "r") as f:
+                plumed_cv_config = yaml.load(f, Loader=yaml.FullLoader)
+        if args.plumed_patch is not None and plumed_cv_config is None:
+            raise ValueError("plumed_cv_config (-psc) is required when plumed_patch (-pp) is set")
         launcher = EnerzymeScanLauncher(
             reactant_path=args.reactant,
             output_path=args.output,
@@ -252,6 +274,8 @@ def main():
             reference_path=args.reference,
             model_config_path=args.model_config,
             n_steps=args.n_steps,
+            plumed_patch_key=args.plumed_patch,
+            plumed_cv_config=plumed_cv_config,
         )
         launcher.launch()
     elif args.command == "update_terachem_scan":
@@ -278,11 +302,14 @@ def main():
             training_ratio=args.training_ratio,
             cluster_inference_batch_size=args.cluster_inference_batch_size,
             n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
+            initial_scan=args.initial_scan,
+            n_initial_scan_steps=args.n_initial_scan_steps,
             continual_learning=args.continual_learning,
             reference_pdb_path=args.reference_pdb_path,
             template_sdf_path=args.template_sdf_path,
             restraint_mode=args.restraint_mode,
             reset_parameters=args.reset_parameters,
+            initial_xyz_path=args.initial_xyz_path,
         )
         launcher.launch()
     else:
