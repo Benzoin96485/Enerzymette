@@ -2,7 +2,11 @@ from typing import List, Tuple, Optional
 from ase import Atoms
 from ase.units import kJ, mol, fs, kcal
 
-from ._engine import ReactionCoordinate, generate_steered_md, generate_scan_restraint
+from enerzymette.plumed_config_generator._engine import (
+    ReactionCoordinate,
+    generate_steered_md,
+    generate_scan_restraint,
+)
 
 _SAMMT_PRINT_ARGS = "d0,d1,dsort.1,dd,mr.*"
 
