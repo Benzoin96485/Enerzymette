@@ -170,7 +170,9 @@ flowchart LR
 
 ## Debugging
 
-Installed packages may be non-editable. Prepend source trees to `PYTHONPATH`:
+**`plumed_scan` / `--initial-scan` require an Enerzyme build where `_run_plumed_scan` calls `_get_plumed_config(target_value=x)` per scan point** (see `enerzyme/tasks/simulator.py`). Older installed `enerzyme` raises `TypeError: get_*_scan_config() missing ... 'target_value'`.
+
+Installed packages may be non-editable. Either reinstall Enerzyme from source, or prepend source trees to `PYTHONPATH`:
 
 ```bash
 export PYTHONPATH=/path/to/Enerzymette:/path/to/Enerzyme:$PYTHONPATH

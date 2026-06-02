@@ -406,6 +406,9 @@ class active_learning_launcher:
             config["Simulation"].pop("sampling", None)
             config["Simulation"]["integrate"]["n_step"] = self.n_presimulation_steps_per_iteration
         elif task == "plumed_scan":
+            config["Simulation"].pop("integrate", None)
+            if "optimize" not in config["Simulation"]:
+                config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
             idx_start_from = config["Simulation"]["idx_start_from"]
             plumed_cv_config = config["Simulation"]["sampling"]["params"]["plumed_config"]
             initial_structure = ase.io.read(structure_path, index=-1)
