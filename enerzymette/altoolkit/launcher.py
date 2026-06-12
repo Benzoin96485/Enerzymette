@@ -9,12 +9,7 @@ from ..plumed_config_generator import (
     get_scan_config_generator_name,
     resolve_scan_endpoints,
 )
-from ..mep_util import (
-    find_intermediate_indices,
-    find_ci_index,
-    find_rate_determining_step,
-    find_new_name,
-)
+from ..mep_util import analyze_scan_path, find_new_name
 from ..logger import logger
 
 
@@ -383,6 +378,80 @@ class active_learning_launcher:
         with open(self._structure_pool_state_path(), "w") as f:
             json.dump(self.structure_pool_state, f, indent=2)
 
+    def _pt_scope_path_for_entry(self, entry_path: str) -> str:
+        base, _ = os.path.splitext(entry_path)
+        return f"{base}.pt_scope.json"
+
+    def _pt_state_path_for_entry(self, entry_path: str) -> str:
+        base, _ = os.path.splitext(entry_path)
+        return f"{base}.opes_state.data"
+
+    def _plumed_config_from_simulation(self, simulation_config: Dict) -> Optional[Dict]:
+        return (
+            simulation_config.get("Simulation", {})
+            .get("sampling", {})
+            .get("params", {})
+            .get("plumed_config")
+        )
+
+    def _inject_proton_transfer_config(
+        self,
+        iteration: int,
+        simulation_config: Dict,
+        simulation_path: str,
+    ) -> Dict:
+        plumed_config = self._plumed_config_from_simulation(simulation_config)
+        if not plumed_config or not plumed_config.get("proton_transfer"):
+            return simulation_config
+
+        entries = self.structure_pool_state["entries"]
+        pool_idx = iteration % len(entries)
+        entry = entries[pool_idx]
+        scope_file = self._pt_scope_path_for_entry(entry["path"])
+        state_pool_file = self._pt_state_path_for_entry(entry["path"])
+
+        plumed_config["pt_scope_file"] = scope_file
+        state_sim_file = os.path.join(simulation_path, "opes_state.data")
+        plumed_config["pt_state_file"] = state_sim_file
+
+        if entry.get("run") and os.path.exists(state_pool_file):
+            plumed_config["pt_restart"] = True
+            shutil.copy(state_pool_file, state_sim_file)
+            logger.info(
+                f"Iteration {iteration}: OPES restart for pool entry {pool_idx} "
+                f"from {state_pool_file}"
+            )
+        else:
+            plumed_config["pt_restart"] = False
+
+        return simulation_config
+
+    def _persist_proton_transfer_state(
+        self,
+        iteration: int,
+        simulation_path: str,
+        simulation_config: Dict,
+    ) -> None:
+        plumed_config = self._plumed_config_from_simulation(simulation_config)
+        if not plumed_config or not plumed_config.get("proton_transfer"):
+            return
+
+        entries = self.structure_pool_state["entries"]
+        pool_idx = iteration % len(entries)
+        entry = entries[pool_idx]
+        state_pool_file = self._pt_state_path_for_entry(entry["path"])
+        plumed_config = self._plumed_config_from_simulation(simulation_config) or {}
+        state_sim_file = plumed_config.get(
+            "pt_state_file",
+            os.path.join(simulation_path, "opes_state.data"),
+        )
+        if os.path.exists(state_sim_file):
+            shutil.copy(state_sim_file, state_pool_file)
+            logger.info(
+                f"Iteration {iteration}: saved OPES state for pool entry {pool_idx} "
+                f"to {state_pool_file}"
+            )
+
     def _write_task_config(
         self,
         task: str,
@@ -532,12 +601,10 @@ class active_learning_launcher:
             os.path.join(elementary_reaction_path, "scan_optim.xyz"), format="extxyz", index=":"
         )
         energies = [atoms.get_potential_energy() for atoms in scan_atoms]
-        intermediate_indices = find_intermediate_indices(energies)
-        ci_index = find_ci_index(energies)
-        _, product_index, _ = find_rate_determining_step(intermediate_indices, energies, ci_index)
+        path = analyze_scan_path(energies)
 
         scan_product_path = os.path.join(elementary_reaction_path, "init_product.xyz")
-        ase.io.write(scan_product_path, scan_atoms[product_index], format="extxyz")
+        ase.io.write(scan_product_path, scan_atoms[path.product_index], format="extxyz")
         product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
         self._write_task_config("opt", scan_product_path, product_opt_config_path, base_config)
         subprocess.Popen(
@@ -548,9 +615,11 @@ class active_learning_launcher:
         os.rename(opt_path, os.path.join(elementary_reaction_path, "product.xyz"))
 
         return {
-            "intermediate_indices": intermediate_indices,
+            "intermediate_indices": path.intermediate_indices,
             "mep_path_info": {"atoms": scan_atoms, "energies": energies},
-            "ci_index": ci_index,
+            "ci_index": path.ci_index,
+            "terminate_chain": path.terminate_chain,
+            "chain_reactant_index": path.chain_reactant_index,
         }
 
     def _run_initial_scan(self) -> None:
@@ -606,25 +675,40 @@ class active_learning_launcher:
                 mep_path_info = elementary_reaction_info["mep_path_info"]
                 ci_index = elementary_reaction_info["ci_index"]
 
-                if len(intermediate_indices) > 0:
-                    reactant_index, _, _ = find_rate_determining_step(
-                        intermediate_indices, mep_path_info["energies"], ci_index
+                if elementary_reaction_info["terminate_chain"]:
+                    logger.info(
+                        f"Initial scan: CI at index 0 for {reaction_name} "
+                        "(scan energy decreases along the path); no further scan needed"
+                    )
+                    break
+
+                chain_reactant_index = elementary_reaction_info["chain_reactant_index"]
+                if chain_reactant_index is not None:
+                    logger.info(
+                        f"Initial scan chain: intermediates {intermediate_indices}, "
+                        f"CI at {ci_index}, next reactant from image {chain_reactant_index}"
                     )
                     current_reactant_path = os.path.join(
-                        elementary_reaction_path, f"{reaction_name}-{reactant_index}.xyz"
+                        elementary_reaction_path,
+                        f"{reaction_name}-{chain_reactant_index}.xyz",
                     )
                     ase.io.write(
                         current_reactant_path,
-                        mep_path_info["atoms"][reactant_index],
+                        mep_path_info["atoms"][chain_reactant_index],
                         format="extxyz",
                     )
-                    if reactant_index != 0:
-                        current_reactant_name = find_new_name(reactant_names)
-                        reactant_names.append(current_reactant_name)
+                    current_reactant_name = find_new_name(reactant_names)
+                    reactant_names.append(current_reactant_name)
                     current_product_name = find_new_name(product_names)
                     product_names.append(current_product_name)
                 else:
-                    logger.info(f"Initial scan converged for reaction {reaction_name}")
+                    if intermediate_indices:
+                        logger.info(
+                            f"Initial scan: no interior minimum left of CI at {ci_index}; "
+                            f"stopping after {reaction_name}"
+                        )
+                    else:
+                        logger.info(f"Initial scan converged for reaction {reaction_name}")
                     break
 
         open(completed_flag, "w").close()
@@ -780,6 +864,9 @@ class active_learning_launcher:
             simulation_config["Simulation"]["uncertainty_calculator"]["params"]["B"] = average_E_var / self.NA
 
         simulation_config["System"]["structure_file"] = initial_structure_path
+        simulation_config = self._inject_proton_transfer_config(
+            i, simulation_config, simulation_path
+        )
 
         with open(simulation_config_path, "w") as f:
             yaml.dump(simulation_config, f, default_flow_style=False)
@@ -813,6 +900,7 @@ class active_learning_launcher:
 
         if os.path.exists(simulation_trajectory_path):
             open(simulation_completed_flag, "w").close()
+        self._persist_proton_transfer_state(i, simulation_path, simulation_config)
         logger.info(f"Simulation finished for {simulation_path}")
 
     def _get_collection_path(self, i: int) -> str:

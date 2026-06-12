@@ -5,3 +5,5 @@ build
 .cursor
 *.log*
 scripts/
+tests/
+validation/

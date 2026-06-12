@@ -6,7 +6,7 @@ import ase
 import ase.io
 from ase.units import kcal, mol
 from ..logger import logger
-from ..mep_util import find_intermediate_indices, find_ci_index, find_rate_determining_step, find_new_name
+from ..mep_util import analyze_scan_path, find_new_name
 from ..plumed_config_generator import (
     get_plumed_patch,
     get_scan_config_generator_name,
@@ -123,19 +123,59 @@ class EnerzymeScanLauncher:
                 mep_path_info = elementary_reaction_info["mep_path_info"]
                 ci_index = elementary_reaction_info["ci_index"]
 
-                if len(intermediate_indices) > 0:
-                    logger.info(f"Intermediate indices in the chain: {intermediate_indices}")
-                    reactant_index, _, _ = find_rate_determining_step(intermediate_indices, mep_path_info["energies"], ci_index)
-                    current_reactant_path = os.path.join(elementary_reaction_path, f"{reaction_name}-{reactant_index}.xyz")
-                    ase.io.write(current_reactant_path, mep_path_info["atoms"][reactant_index], format="extxyz")
-                    if reactant_index != 0:
-                        current_reactant_name = find_new_name(reactant_names)
-                        logger.info(f"New reactant {current_reactant_name} of rate determining step is found from image {reactant_index} of reaction {reaction_name}")
+                if elementary_reaction_info["terminate_chain"]:
+                    logger.info(
+                        f"CI at scan start (index 0) for {reaction_name} "
+                        "(scan energy decreases along the path); no further scan needed"
+                    )
+                    lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
+                    ts_energy = mep_path_info["energies"][ci_index]
+                    energy_span = (ts_energy - lowest_reactant_energy) / (kcal / mol)
+                    energy_change = (lowest_product_energy - lowest_reactant_energy) / (kcal / mol)
+                    logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol")
+                    logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol")
+                    results = {
+                        "energy span": energy_span,
+                        "energy change": energy_change,
+                        "lowest energy reactant": lowest_reactant_name,
+                        "lowest energy product": lowest_product_name,
+                    }
+                    ts_dir = os.path.join(self.output_path, "rate_determining_ts")
+                    os.makedirs(ts_dir, exist_ok=True)
+                    with open(os.path.join(ts_dir, "results.json"), "w") as f:
+                        json.dump(results, f, indent=4)
+                    ase.io.write(
+                        os.path.join(ts_dir, f"{reaction_name}.xyz"),
+                        mep_path_info["atoms"][ci_index],
+                        format="extxyz",
+                    )
+                    break
 
+                chain_reactant_index = elementary_reaction_info["chain_reactant_index"]
+                if chain_reactant_index is not None:
+                    logger.info(f"Intermediate indices in the chain: {intermediate_indices}")
+                    current_reactant_path = os.path.join(
+                        elementary_reaction_path, f"{reaction_name}-{chain_reactant_index}.xyz"
+                    )
+                    ase.io.write(
+                        current_reactant_path,
+                        mep_path_info["atoms"][chain_reactant_index],
+                        format="extxyz",
+                    )
+                    current_reactant_name = find_new_name(reactant_names)
+                    logger.info(
+                        f"New reactant {current_reactant_name} from interior minimum "
+                        f"image {chain_reactant_index} of reaction {reaction_name} (CI at {ci_index})"
+                    )
                     current_product_name = find_new_name(product_names)
-                        
                     reactant_names.append(current_reactant_name)
                     product_names.append(current_product_name)
+                elif intermediate_indices:
+                    logger.info(
+                        f"No interior minimum left of CI at {ci_index}; "
+                        f"stopping after {reaction_name}"
+                    )
+                    break
                 else:
                     logger.info(f"Scan converged for reaction {reaction_name}")
                     lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
@@ -227,14 +267,12 @@ class EnerzymeScanLauncher:
             "n_atoms": len(scan_atoms[0])
         }
 
-        intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
-        ci_index = find_ci_index(mep_path_info["energies"])
-        _, product_index, _ = find_rate_determining_step(intermediate_indices, mep_path_info["energies"], ci_index)
+        path = analyze_scan_path(mep_path_info["energies"])
 
         # optimize product
         scan_product_path = os.path.join(elementary_reaction_path, "init_product.xyz")
-        ase.io.write(scan_product_path, scan_atoms[product_index], format="extxyz")
-        logger.info(f"Scanned product (image {product_index}) written to {scan_product_path}")
+        ase.io.write(scan_product_path, scan_atoms[path.product_index], format="extxyz")
+        logger.info(f"Scanned product (image {path.product_index}) written to {scan_product_path}")
         product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
         self.write_config(
             task="opt",
@@ -250,9 +288,11 @@ class EnerzymeScanLauncher:
         logger.info(f"Product optimized and written to {product_path}")
 
         return {
-            "intermediate_indices": intermediate_indices,
+            "intermediate_indices": path.intermediate_indices,
             "mep_path_info": mep_path_info,
-            "ci_index": ci_index,
+            "ci_index": path.ci_index,
+            "terminate_chain": path.terminate_chain,
+            "chain_reactant_index": path.chain_reactant_index,
         }
 
     def _enerzyme_simulate_cmd(

@@ -68,6 +68,54 @@ System:
   structure_file: initial.xyz
 ```
 
+#### Optional proton-transfer OPES (SAM-MT only)
+
+When `proton_transfer: true` is set under `plumed_config`, steered MD is unchanged and an
+OPES-Explore bias on a proton-transfer CV is appended. Defaults keep the feature off; omit
+the keys below for legacy behaviour.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `proton_transfer` | `false` | Enable proton-transfer OPES alongside steered MD |
+| `proton_hbond_coeff` | `1.0` | H-bond cutoff = (r_donor + r_H) × coeff (mendeleev covalent radius, pm→Å) |
+| `acceptor_radius` | `4.0` | Acceptor cutoff = fixed distance (Å) from donor to N/O atoms |
+| `opes_pace` | `20` | OPES `PACE` (steps) |
+| `opes_barrier` | `1.0` | OPES `BARRIER` in kJ/mol |
+| `opes_biasfactor` | `15.0` | OPES `BIASFACTOR` (must be > 1 for explore mode) |
+| `pt_scope_file` | — | Sidecar JSON with donor / proton / acceptor indices (written once) |
+| `pt_restart` | `false` | Add PLUMED `RESTART` and `STATE_RFILE` |
+| `pt_state_file` | `opes_state.data` | OPES state filename in the run directory |
+| `opes_state_wstride` | auto | `STATE_WSTRIDE`; default picks a divisor of `n_step` so the final step is checkpointed (ASE has no CPT events) |
+
+Example (standalone `enerzyme simulate`):
+
+```yaml
+  sampling:
+    params:
+      plumed_config:
+        dump_interval: 20
+        lower_bound: -2
+        upper_bound: 2
+        reference_pdb_file: cluster-capped.pdb
+        substrate: G
+        nucleophile: "O2'"
+        proton_transfer: true
+        pt_scope_file: structure_pool/000.pt_scope.json
+```
+
+Active-learning launcher (`altoolkit/launcher.py`) injects `pt_scope_file`, `pt_restart`,
+and copies `opes_state.data` per structure-pool entry when `proton_transfer` is enabled in
+the base simulation YAML. Sidecars live next to pool XYZ files:
+`structure_pool/NNN.pt_scope.json`, `structure_pool/NNN.opes_state.data`.
+
+OPES checkpoints are written via `STATE_WSTRIDE` (not CPT), because Enerzyme/ASE does not
+signal checkpoint events to PLUMED. After each simulation, the launcher copies the final
+`opes_state.data` from the run directory into the pool sidecar for the next restart.
+
+**PLUMED OPES module:** the default conda `plumed` build has `module opes off`. Load
+`module load plumed/2.9.2-opes` (or set `PLUMED_KERNEL` to the opes-enabled library)
+before running simulations with `proton_transfer: true`.
+
 Run with the plugin on `PYTHONPATH`:
 
 ```bash

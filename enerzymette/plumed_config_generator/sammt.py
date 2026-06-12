@@ -1,14 +1,180 @@
+import json
+import os
 from typing import List, Tuple, Optional
+
 from ase import Atoms
 from ase.units import kJ, mol, fs, kcal
+from mendeleev import element
 
 from enerzymette.plumed_config_generator._engine import (
+    ProtonTransferBias,
+    ProtonTransferScope,
     ReactionCoordinate,
-    generate_steered_md,
+    append_proton_transfer_to_plumed,
+    default_opes_state_wstride,
     generate_scan_restraint,
+    generate_steered_md,
 )
 
 _SAMMT_PRINT_ARGS = "d0,d1,dsort.1,dd,mr.*"
+
+_DEFAULT_PROTON_HBOND_COEFF = 1.1
+_DEFAULT_ACCEPTOR_RADIUS = 4.0
+_DEFAULT_OPES_PACE = 20
+_DEFAULT_OPES_BARRIER_KJ_MOL = 20.0
+_DEFAULT_OPES_BIASFACTOR = 100.0
+
+
+def _covalent_radius_angstrom(symbol: str) -> float:
+    """Return mendeleev covalent radius in Angstrom (mendeleev uses pm)."""
+    radius_pm = element(symbol).covalent_radius
+    if radius_pm is None:
+        raise ValueError(f"No covalent radius available for element {symbol!r}")
+    return radius_pm / 100.0
+
+
+def resolve_proton_transfer_scope(
+    system: Atoms,
+    index_nucleophile: int,
+    idx_start_from: int,
+    proton_hbond_coeff: float = _DEFAULT_PROTON_HBOND_COEFF,
+    acceptor_radius: float = _DEFAULT_ACCEPTOR_RADIUS,
+) -> ProtonTransferScope:
+    """Identify proton donor, transfer protons, and acceptors for SAM-MT."""
+    donor_ase_idx = index_nucleophile - idx_start_from
+    if donor_ase_idx < 0 or donor_ase_idx >= len(system):
+        raise ValueError(
+            f"index_nucleophile={index_nucleophile} is out of range for {len(system)} atoms"
+        )
+
+    donor_symbol = system[donor_ase_idx].symbol
+    proton_threshold = (
+        _covalent_radius_angstrom(donor_symbol) + _covalent_radius_angstrom("H")
+    ) * proton_hbond_coeff
+
+    transfer_protons = [
+        i
+        for i, atom in enumerate(system)
+        if atom.number == 1
+        and system.get_distance(donor_ase_idx, i, mic=False) < proton_threshold
+    ]
+    if not transfer_protons:
+        raise ValueError(
+            f"No transfer protons found within {proton_threshold:.3f} A of donor "
+            f"atom {donor_ase_idx} ({donor_symbol})"
+        )
+
+    acceptor_candidates = [
+        i
+        for i, atom in enumerate(system)
+        if atom.number in (7, 8) and i != donor_ase_idx
+    ]
+    if not acceptor_candidates:
+        raise ValueError("No N/O proton acceptor candidates found near the donor")
+
+    acceptors = [
+        i
+        for i in acceptor_candidates
+        if system.get_distance(donor_ase_idx, i, mic=False) < acceptor_radius
+    ]
+    if not acceptors:
+        raise ValueError(
+            f"No acceptors found within {acceptor_radius:.3f} A of donor "
+            f"atom {donor_ase_idx}"
+        )
+
+    return ProtonTransferScope(
+        index_donor=donor_ase_idx,
+        transfer_protons=transfer_protons,
+        acceptors=acceptors,
+    )
+
+
+def load_proton_transfer_scope(scope_file: str) -> ProtonTransferScope:
+    with open(scope_file, "r") as handle:
+        return ProtonTransferScope.from_dict(json.load(handle))
+
+
+def save_proton_transfer_scope(scope_file: str, scope: ProtonTransferScope) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(scope_file)), exist_ok=True)
+    with open(scope_file, "w") as handle:
+        json.dump(scope.to_dict(), handle, indent=2)
+
+
+def _load_or_resolve_proton_transfer_scope(
+    system: Atoms,
+    index_nucleophile: int,
+    idx_start_from: int,
+    pt_scope_file: Optional[str],
+    proton_hbond_coeff: float,
+    acceptor_radius: float,
+) -> ProtonTransferScope:
+    if pt_scope_file is not None and os.path.exists(pt_scope_file):
+        return load_proton_transfer_scope(pt_scope_file)
+
+    scope = resolve_proton_transfer_scope(
+        system,
+        index_nucleophile,
+        idx_start_from,
+        proton_hbond_coeff=proton_hbond_coeff,
+        acceptor_radius=acceptor_radius,
+    )
+    if pt_scope_file is not None:
+        save_proton_transfer_scope(pt_scope_file, scope)
+    return scope
+
+
+def _maybe_append_proton_transfer(
+    plumed_config: List[str],
+    system: Atoms,
+    idx_start_from: int,
+    index_nucleophile: int,
+    dump_interval: int,
+    integrate_config: dict,
+    proton_transfer: bool,
+    pt_scope_file: Optional[str],
+    pt_restart: bool,
+    pt_state_file: str,
+    proton_hbond_coeff: float,
+    acceptor_radius: float,
+    opes_pace: int,
+    opes_barrier: float,
+    opes_biasfactor: float,
+    opes_state_wstride: Optional[int] = None,
+) -> List[str]:
+    if not proton_transfer:
+        return plumed_config
+
+    scope = _load_or_resolve_proton_transfer_scope(
+        system,
+        index_nucleophile,
+        idx_start_from,
+        pt_scope_file,
+        proton_hbond_coeff,
+        acceptor_radius,
+    )
+    n_step = integrate_config.get("n_step")
+    state_wstride = (
+        opes_state_wstride
+        if opes_state_wstride is not None
+        else default_opes_state_wstride(n_step, dump_interval)
+    )
+    bias = ProtonTransferBias(
+        pace=opes_pace,
+        barrier_kj_mol=opes_barrier,
+        biasfactor=opes_biasfactor,
+        state_wfile=pt_state_file,
+        state_wstride=state_wstride,
+        state_rfile=pt_state_file if pt_restart else None,
+        pt_restart=pt_restart,
+    )
+    return append_proton_transfer_to_plumed(
+        plumed_config,
+        scope,
+        idx_start_from,
+        dump_interval,
+        bias=bias,
+    )
 
 
 def get_sammt_index(
@@ -172,8 +338,27 @@ def get_sammt_config(
     index_methyl_carbon: Optional[int] = None,
     index_nucleophile: Optional[int] = None,
     max_bond_length: float = 3.0,
+    proton_transfer: bool = False,
+    pt_scope_file: Optional[str] = None,
+    pt_restart: bool = False,
+    pt_state_file: str = "opes_state.data",
+    proton_hbond_coeff: float = _DEFAULT_PROTON_HBOND_COEFF,
+    acceptor_radius: float = _DEFAULT_ACCEPTOR_RADIUS,
+    opes_pace: int = _DEFAULT_OPES_PACE,
+    opes_barrier: float = _DEFAULT_OPES_BARRIER_KJ_MOL,
+    opes_biasfactor: float = _DEFAULT_OPES_BIASFACTOR,
+    opes_state_wstride: Optional[int] = None,
     **kwargs,
 ) -> List[str]:
+    index_sulphur, index_methyl_carbon, index_nucleophile = _resolve_sammt_indices(
+        idx_start_from,
+        reference_pdb_file,
+        substrate,
+        nucleophile,
+        index_sulphur,
+        index_methyl_carbon,
+        index_nucleophile,
+    )
     rc = get_sammt_reaction_coordinate(
         system,
         idx_start_from,
@@ -187,9 +372,26 @@ def get_sammt_config(
         index_methyl_carbon=index_methyl_carbon,
         index_nucleophile=index_nucleophile,
         max_bond_length=max_bond_length,
-        **kwargs,
     )
-    return generate_steered_md(rc, integrate_config)
+    plumed_config = generate_steered_md(rc, integrate_config)
+    return _maybe_append_proton_transfer(
+        plumed_config,
+        system,
+        idx_start_from,
+        index_nucleophile,
+        dump_interval,
+        integrate_config,
+        proton_transfer,
+        pt_scope_file,
+        pt_restart,
+        pt_state_file,
+        proton_hbond_coeff,
+        acceptor_radius,
+        opes_pace,
+        opes_barrier,
+        opes_biasfactor,
+        opes_state_wstride,
+    )
 
 
 def get_sammt_scan_config(
