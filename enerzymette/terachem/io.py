@@ -5,6 +5,10 @@ import subprocess
 import os
 
 
+def _is_xyz_constraint(constraint_type: str) -> bool:
+    return set(list(constraint_type)) <= {"x", "y", "z"} and len(constraint_type) <= 3
+
+
 def read_energy(lines: List[str]) -> Optional[float]:
     """Read energy."""
     energy = None
@@ -79,7 +83,7 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
             info[current_section]["raw_content"].append(clean_line)
             if current_section == "constraint_freeze":
                 constraint_type, indices = clean_line.split()
-                if set(list(constraint_type)) <= {"x", "y", "z"} and len(constraint_type) <= 3:
+                if _is_xyz_constraint(constraint_type):
                     index_segments = indices.split(",")
                     index_list = []
                     for i in index_segments:
@@ -108,7 +112,7 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
     return info
 
 
-def write_terachem_input(info: Dict[str, Any], terachem_input_file: str):
+def write_terachem_input(info: Dict[str, Any], terachem_input_file: str, indices_per_line: int=4):
     with open(terachem_input_file, "w") as f:
         main_section = info["main"]
         for key, value in main_section.items():
@@ -124,13 +128,23 @@ def write_terachem_input(info: Dict[str, Any], terachem_input_file: str):
                 if constraint_type == "bond":
                     f.write(f"{constraint_type} {constraint_params['x0']} {constraint_params['x1']} {constraint_params['num']} {constraint_params['i0']}_{constraint_params['i1']}\n")
             f.write("$end\n")
-        for section, content in info.items():
-            if section in {"main", "constraint_scan"}:
-                continue
-            f.write(f"${section}\n")
-            for line in content["raw_content"]:
-                f.write(f"{line}\n")
+        elif "constraint_freeze" in info:
+            constraint_freeze_section = info["constraint_freeze"]
+            f.write("$constraint_freeze\n")
+            for constraint_type, constraint_params in constraint_freeze_section.items():
+                if _is_xyz_constraint(constraint_type):
+                    for i in range(0, len(constraint_params), indices_per_line):
+                        f.write(f"{constraint_type} {','.join(map(str, constraint_params[i:i+indices_per_line]))}\n")
+                else:
+                    for i in range(0, len(constraint_params), indices_per_line):
+                        f.write(f"{constraint_type} {','.join(map(lambda indices: '_'.join(map(str, indices)), constraint_params[i:i+indices_per_line]))}\n")
             f.write("$end\n")
+        for section, content in info.items():
+            if section not in {"main", "constraint_scan", "constraint_freeze"}:
+                f.write(f"${section}\n")
+                for line in content["raw_content"]:
+                    f.write(f"{line}\n")
+                f.write("$end\n")
 
 
 def clean_scr(scr_path: str, keep_mo: bool, basename: Optional[str]=None):
