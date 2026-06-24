@@ -11,6 +11,7 @@ from ..plumed_config_generator import (
 )
 from ..mep_util import analyze_scan_path, find_new_name
 from ..logger import logger
+from .structures_manifest import SystemManifestEntry, load_systems_manifest
 
 
 def update_config(old_config: Dict, new_config: Dict):
@@ -89,6 +90,7 @@ class active_learning_launcher:
         reset_parameters: bool=False,
         initial_scan: bool=False,
         n_initial_scan_steps: int=25,
+        initial_structures_config_path: Optional[str]=None,
     ) -> None:
         self.pretrain_path = pretrain_path
         self.pretrain_config = None
@@ -126,20 +128,105 @@ class active_learning_launcher:
         self.output_xyz_path = os.path.join(self.output_path, "cluster.xyz")
         self.output_mol_path = os.path.join(self.output_path, "cluster.mol")
         self.initial_xyz_path = initial_xyz_path
+        self.initial_structures_config_path = initial_structures_config_path
+        self.multi_system_mode = initial_structures_config_path is not None
+        self.systems_manifest: Optional[List[SystemManifestEntry]] = None
+        self._validate_launch_options()
+
+    def _validate_launch_options(self) -> None:
+        if not self.multi_system_mode:
+            return
+
+        if self.initial_scan:
+            raise NotImplementedError(
+                "Multi-system active learning does not support --initial-scan"
+            )
+        if self.reference_pdb_path is not None:
+            raise ValueError(
+                "Use reference_pdb in --initial-structures-config instead of "
+                "-rp/--reference_pdb_path"
+            )
+        if self.template_sdf_path is not None:
+            raise ValueError(
+                "Use reference_sdf in --initial-structures-config instead of "
+                "-ts/--template_sdf_path"
+            )
+        if self.initial_xyz_path is not None:
+            raise ValueError(
+                "Use reference_xyz in --initial-structures-config instead of "
+                "-ix/--initial_xyz_path"
+            )
+
+        self.systems_manifest = load_systems_manifest(self.initial_structures_config_path)
+        logger.info(
+            f"Loaded multi-system manifest with {len(self.systems_manifest)} systems"
+        )
+
+    def _topology_dir_for_system(self, name: str) -> str:
+        return os.path.join(self.output_path, "topology", name)
+
+    def _topology_paths_for_system(self, name: str) -> Tuple[str, str, str]:
+        topo_dir = self._topology_dir_for_system(name)
+        return (
+            os.path.join(topo_dir, "cluster.png"),
+            os.path.join(topo_dir, "cluster.xyz"),
+            os.path.join(topo_dir, "cluster.mol"),
+        )
+
+    def _cluster_mol_path_for_system(self, name: str) -> str:
+        return self._topology_paths_for_system(name)[2]
+
+    def _run_enerzyme_bond(
+        self,
+        reference_pdb: str,
+        output_img_path: str,
+        output_mol_path: str,
+        reference_sdf: Optional[str] = None,
+    ) -> None:
+        enerzyme_bond_args = [
+            "enerzyme", "bond",
+            "-p", reference_pdb,
+            "-i", output_img_path,
+            "-m", output_mol_path,
+        ]
+        if reference_sdf is not None:
+            enerzyme_bond_args.extend(["-t", reference_sdf])
+        enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
+        enerzyme_subprocess.wait()
+
+    def _get_multi_system_topology(self) -> None:
+        for system in self.systems_manifest:
+            topo_dir = self._topology_dir_for_system(system.name)
+            os.makedirs(topo_dir, exist_ok=True)
+            img_path, _, mol_path = self._topology_paths_for_system(system.name)
+            if os.path.exists(mol_path):
+                logger.info(
+                    f"Topology for {system.name} already exists at {topo_dir}, skipping bond."
+                )
+                continue
+            self._run_enerzyme_bond(
+                system.reference_pdb,
+                img_path,
+                mol_path,
+                reference_sdf=system.reference_sdf,
+            )
+            logger.info(
+                f"Generated topology for {system.name} under {topo_dir} "
+                f"(cluster.mol, cluster.png)"
+            )
 
     def _get_topology(self) -> None:
+        if self.multi_system_mode:
+            self._get_multi_system_topology()
+            return
         if self.reference_pdb_path is not None:
             from rdkit.Chem import MolFromMolFile, MolToXYZFile, GetFormalCharge
-            enerzyme_bond_args = [
-                "enerzyme", "bond",
-                "-p", self.reference_pdb_path,
-                "-i", self.output_img_path,
-                "-m", self.output_mol_path,
-            ]
-            if self.template_sdf_path is not None:
-                enerzyme_bond_args.extend(["-t", self.template_sdf_path])
-            enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
-            enerzyme_subprocess.wait()
+            self._run_enerzyme_bond(
+                self.reference_pdb_path,
+                self.output_img_path,
+                self.output_mol_path,
+                reference_sdf=self.template_sdf_path,
+            )
             cluster_mol = MolFromMolFile(self.output_mol_path, removeHs=False)
             self.charge = GetFormalCharge(cluster_mol)
             if self.initial_xyz_path is None:
@@ -394,6 +481,24 @@ class active_learning_launcher:
             .get("plumed_config")
         )
 
+    def _get_structure_pool_entry(self, iteration: int) -> Tuple[int, Dict]:
+        entries = self.structure_pool_state["entries"]
+        pool_idx = iteration % len(entries)
+        return pool_idx, entries[pool_idx]
+
+    def _simulation_config_path_for_pool_entry(self, entry: Dict) -> str:
+        return entry.get("simulation_config", self.simulation_config_path)
+
+    def _load_simulation_config_for_entry(self, entry: Dict) -> Dict:
+        config_path = self._simulation_config_path_for_pool_entry(entry)
+        with open(config_path, "r") as handle:
+            simulation_config = yaml.load(handle, Loader=yaml.FullLoader)
+        plumed_config = self._plumed_config_from_simulation(simulation_config)
+        reference_pdb = entry.get("reference_pdb")
+        if plumed_config is not None and reference_pdb:
+            plumed_config["reference_pdb_file"] = reference_pdb
+        return simulation_config
+
     def _inject_proton_transfer_config(
         self,
         iteration: int,
@@ -404,15 +509,15 @@ class active_learning_launcher:
         if not plumed_config or not plumed_config.get("proton_transfer"):
             return simulation_config
 
-        entries = self.structure_pool_state["entries"]
-        pool_idx = iteration % len(entries)
-        entry = entries[pool_idx]
+        pool_idx, entry = self._get_structure_pool_entry(iteration)
         scope_file = self._pt_scope_path_for_entry(entry["path"])
         state_pool_file = self._pt_state_path_for_entry(entry["path"])
 
         plumed_config["pt_scope_file"] = scope_file
         state_sim_file = os.path.join(simulation_path, "opes_state.data")
         plumed_config["pt_state_file"] = state_sim_file
+        if os.path.exists(self.output_mol_path):
+            plumed_config["topology_mol_file"] = self.output_mol_path
 
         if entry.get("run") and os.path.exists(state_pool_file):
             plumed_config["pt_restart"] = True
@@ -436,9 +541,7 @@ class active_learning_launcher:
         if not plumed_config or not plumed_config.get("proton_transfer"):
             return
 
-        entries = self.structure_pool_state["entries"]
-        pool_idx = iteration % len(entries)
-        entry = entries[pool_idx]
+        pool_idx, entry = self._get_structure_pool_entry(iteration)
         state_pool_file = self._pt_state_path_for_entry(entry["path"])
         plumed_config = self._plumed_config_from_simulation(simulation_config) or {}
         state_sim_file = plumed_config.get(
@@ -751,6 +854,12 @@ class active_learning_launcher:
         state_path = self._structure_pool_state_path()
         if os.path.exists(state_path):
             self.structure_pool_state = self._load_structure_pool()
+            if self.multi_system_mode:
+                for entry in self.structure_pool_state["entries"]:
+                    if "cluster_mol_path" not in entry and entry.get("name"):
+                        entry["cluster_mol_path"] = self._cluster_mol_path_for_system(
+                            entry["name"]
+                        )
             logger.info(
                 f"Loaded structure pool with {len(self.structure_pool_state['entries'])} entries"
             )
@@ -759,6 +868,33 @@ class active_learning_launcher:
         if self.initial_scan:
             self._run_initial_scan()
             self._build_structure_pool_from_initial_scan()
+            return
+
+        if self.multi_system_mode:
+            pool_dir = self._structure_pool_dir()
+            os.makedirs(pool_dir, exist_ok=True)
+            pool_entries = []
+            for pool_idx, system in enumerate(self.systems_manifest):
+                dst = os.path.join(pool_dir, f"{pool_idx:03d}.xyz")
+                shutil.copy(system.reference_xyz, dst)
+                entry = {
+                    "path": dst,
+                    "run": False,
+                    "name": system.name,
+                    "simulation_config": system.simulation_config,
+                    "reference_pdb": system.reference_pdb,
+                    "source_structure": system.source_structure,
+                    "cluster_mol_path": self._cluster_mol_path_for_system(system.name),
+                }
+                if system.reference_sdf:
+                    entry["reference_sdf"] = system.reference_sdf
+                pool_entries.append(entry)
+            self.structure_pool_state = {"entries": pool_entries}
+            self._save_structure_pool()
+            logger.info(
+                f"Structure pool initialized with {len(pool_entries)} systems "
+                "from manifest"
+            )
             return
 
         with open(self.simulation_config_path, "r") as f:
@@ -784,9 +920,7 @@ class active_learning_launcher:
         simulation_model_config_path: str,
         simulation_config: Dict,
     ) -> None:
-        entries = self.structure_pool_state["entries"]
-        pool_idx = i % len(entries)
-        entry = entries[pool_idx]
+        pool_idx, entry = self._get_structure_pool_entry(i)
 
         if not entry["run"]:
             shutil.copy(entry["path"], initial_structure_path)
@@ -832,6 +966,14 @@ class active_learning_launcher:
             )
             return
 
+        if self.multi_system_mode:
+            shutil.copy(entry["path"], initial_structure_path)
+            logger.info(
+                f"Iteration {i}: reusing pool entry {pool_idx} structure "
+                f"from {entry['path']}"
+            )
+            return
+
         last_simulation_trajectory_path = self._get_simulation_path(i - 1)[1]
         last_frame = ase.io.read(last_simulation_trajectory_path, index=-1)
         ase.io.write(initial_structure_path, last_frame, format="extxyz")
@@ -851,17 +993,29 @@ class active_learning_launcher:
         
         os.makedirs(simulation_path, exist_ok=True)
 
-        with open(self.simulation_config_path, "r") as f:
-            simulation_config = yaml.load(f, Loader=yaml.FullLoader)
+        pool_idx, entry = self._get_structure_pool_entry(i)
+        simulation_config = self._load_simulation_config_for_entry(entry)
         if i == 0:
             simulation_config["Simulation"].pop("uncertainty_calculator", None)
         else:
             average_E_var = self._get_max_E_var(i)
-            if self.NA is None:
-                initial_structure = ase.io.read(simulation_config["System"]["structure_file"])
-                self.NA = len(initial_structure)
-                logger.info(f"Initial structure has {self.NA} atoms.")
-            simulation_config["Simulation"]["uncertainty_calculator"]["params"]["B"] = average_E_var / self.NA
+            if self.multi_system_mode:
+                na = len(ase.io.read(entry["path"]))
+                entry_name = entry.get("name", str(pool_idx))
+                logger.info(
+                    f"Pool entry {pool_idx} ({entry_name}) has {na} atoms."
+                )
+            else:
+                if self.NA is None:
+                    initial_structure = ase.io.read(
+                        simulation_config["System"]["structure_file"]
+                    )
+                    self.NA = len(initial_structure)
+                    logger.info(f"Initial structure has {self.NA} atoms.")
+                na = self.NA
+            simulation_config["Simulation"]["uncertainty_calculator"]["params"]["B"] = (
+                average_E_var / na
+            )
 
         simulation_config["System"]["structure_file"] = initial_structure_path
         simulation_config = self._inject_proton_transfer_config(
@@ -900,6 +1054,13 @@ class active_learning_launcher:
 
         if os.path.exists(simulation_trajectory_path):
             open(simulation_completed_flag, "w").close()
+            if self.multi_system_mode:
+                last_frame = ase.io.read(simulation_trajectory_path, index=-1)
+                ase.io.write(entry["path"], last_frame, format="extxyz")
+                self._save_structure_pool()
+                logger.info(
+                    f"Iteration {i}: updated pool entry {pool_idx} from steered MD"
+                )
         self._persist_proton_transfer_state(i, simulation_path, simulation_config)
         logger.info(f"Simulation finished for {simulation_path}")
 
@@ -938,6 +1099,11 @@ class active_learning_launcher:
         with open(self.extraction_config_path, "r") as f:
             extraction_config = yaml.load(f, Loader=yaml.FullLoader)
         extraction_config["Datahub"]["data_path"] = collection_path
+        if self.multi_system_mode:
+            _, entry = self._get_structure_pool_entry(i)
+            cluster_mol_path = entry.get("cluster_mol_path")
+            if cluster_mol_path:
+                extraction_config["Extractor"]["reference_mol_path"] = cluster_mol_path
         if i <= 0 and (self.reset_parameters or self.pretrain_path is None):
             extraction_config["Extractor"]["extract_method"] = "random"
         with open(extraction_config_path, "w") as f:

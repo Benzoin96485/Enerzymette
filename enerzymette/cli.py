@@ -214,6 +214,12 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-ix', '--initial_xyz_path', type=str,
         help='initial xyz file path', default=None
     )
+    parser_enerzyme_active_learning.add_argument(
+        '--initial-structures-config',
+        type=str,
+        default=None,
+        help='YAML manifest for multi-system initial structure pool',
+    )
     args = parser.parse_args()
     return args
 
@@ -310,6 +316,7 @@ def main():
             restraint_mode=args.restraint_mode,
             reset_parameters=args.reset_parameters,
             initial_xyz_path=args.initial_xyz_path,
+            initial_structures_config_path=args.initial_structures_config,
         )
         launcher.launch()
     else:

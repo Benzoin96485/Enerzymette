@@ -33,12 +33,67 @@ def _covalent_radius_angstrom(symbol: str) -> float:
     return radius_pm / 100.0
 
 
+def _nearest_heavy_atom_index(system: Atoms, atom_idx: int) -> int:
+    heavy_atoms = [i for i, atom in enumerate(system) if atom.number > 1]
+    if not heavy_atoms:
+        raise ValueError("No heavy atoms found in system")
+    return min(
+        heavy_atoms,
+        key=lambda i: system.get_distance(atom_idx, i, mic=False),
+    )
+
+
+def _heavy_bond_counts_from_topology(
+    topology_mol_file: str,
+    expected_n_atoms: int,
+) -> List[int]:
+    try:
+        from rdkit import Chem
+    except ImportError as exc:
+        raise ImportError(
+            "RDKit is required to filter proton acceptors by topology_mol_file"
+        ) from exc
+
+    mol = Chem.MolFromMolFile(topology_mol_file, removeHs=False, sanitize=False)
+    if mol is None:
+        raise ValueError(f"Could not read topology mol file: {topology_mol_file}")
+    if mol.GetNumAtoms() != expected_n_atoms:
+        raise ValueError(
+            f"Topology atom count ({mol.GetNumAtoms()}) does not match "
+            f"XYZ atom count ({expected_n_atoms}) for {topology_mol_file}"
+        )
+
+    heavy_bond_counts = [0 for _ in range(expected_n_atoms)]
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        if atom.GetAtomicNum() <= 1:
+            continue
+        heavy_bond_counts[idx] = sum(
+            1
+            for bond in atom.GetBonds()
+            if bond.GetOtherAtom(atom).GetAtomicNum() > 1
+        )
+    return heavy_bond_counts
+
+
+def _is_topologically_allowed_acceptor(
+    atomic_number: int,
+    heavy_bond_count: int,
+) -> bool:
+    if atomic_number == 8:
+        return heavy_bond_count < 2
+    if atomic_number == 7:
+        return heavy_bond_count < 3
+    return False
+
+
 def resolve_proton_transfer_scope(
     system: Atoms,
     index_nucleophile: int,
     idx_start_from: int,
     proton_hbond_coeff: float = _DEFAULT_PROTON_HBOND_COEFF,
     acceptor_radius: float = _DEFAULT_ACCEPTOR_RADIUS,
+    topology_mol_file: Optional[str] = None,
 ) -> ProtonTransferScope:
     """Identify proton donor, transfer protons, and acceptors for SAM-MT."""
     donor_ase_idx = index_nucleophile - idx_start_from
@@ -57,17 +112,31 @@ def resolve_proton_transfer_scope(
         for i, atom in enumerate(system)
         if atom.number == 1
         and system.get_distance(donor_ase_idx, i, mic=False) < proton_threshold
+        and _nearest_heavy_atom_index(system, i) == donor_ase_idx
     ]
     if not transfer_protons:
         raise ValueError(
             f"No transfer protons found within {proton_threshold:.3f} A of donor "
-            f"atom {donor_ase_idx} ({donor_symbol})"
+            f"atom {donor_ase_idx} ({donor_symbol}) whose nearest heavy atom is "
+            "the donor"
         )
 
+    heavy_bond_counts = (
+        _heavy_bond_counts_from_topology(topology_mol_file, len(system))
+        if topology_mol_file is not None
+        else None
+    )
     acceptor_candidates = [
         i
         for i, atom in enumerate(system)
         if atom.number in (7, 8) and i != donor_ase_idx
+        and (
+            heavy_bond_counts is None
+            or _is_topologically_allowed_acceptor(
+                atom.number,
+                heavy_bond_counts[i],
+            )
+        )
     ]
     if not acceptor_candidates:
         raise ValueError("No N/O proton acceptor candidates found near the donor")
@@ -108,6 +177,7 @@ def _load_or_resolve_proton_transfer_scope(
     pt_scope_file: Optional[str],
     proton_hbond_coeff: float,
     acceptor_radius: float,
+    topology_mol_file: Optional[str],
 ) -> ProtonTransferScope:
     if pt_scope_file is not None and os.path.exists(pt_scope_file):
         return load_proton_transfer_scope(pt_scope_file)
@@ -118,6 +188,7 @@ def _load_or_resolve_proton_transfer_scope(
         idx_start_from,
         proton_hbond_coeff=proton_hbond_coeff,
         acceptor_radius=acceptor_radius,
+        topology_mol_file=topology_mol_file,
     )
     if pt_scope_file is not None:
         save_proton_transfer_scope(pt_scope_file, scope)
@@ -137,6 +208,7 @@ def _maybe_append_proton_transfer(
     pt_state_file: str,
     proton_hbond_coeff: float,
     acceptor_radius: float,
+    topology_mol_file: Optional[str],
     opes_pace: int,
     opes_barrier: float,
     opes_biasfactor: float,
@@ -152,6 +224,7 @@ def _maybe_append_proton_transfer(
         pt_scope_file,
         proton_hbond_coeff,
         acceptor_radius,
+        topology_mol_file,
     )
     n_step = integrate_config.get("n_step")
     state_wstride = (
@@ -344,6 +417,7 @@ def get_sammt_config(
     pt_state_file: str = "opes_state.data",
     proton_hbond_coeff: float = _DEFAULT_PROTON_HBOND_COEFF,
     acceptor_radius: float = _DEFAULT_ACCEPTOR_RADIUS,
+    topology_mol_file: Optional[str] = None,
     opes_pace: int = _DEFAULT_OPES_PACE,
     opes_barrier: float = _DEFAULT_OPES_BARRIER_KJ_MOL,
     opes_biasfactor: float = _DEFAULT_OPES_BIASFACTOR,
@@ -387,6 +461,7 @@ def get_sammt_config(
         pt_state_file,
         proton_hbond_coeff,
         acceptor_radius,
+        topology_mol_file,
         opes_pace,
         opes_barrier,
         opes_biasfactor,
