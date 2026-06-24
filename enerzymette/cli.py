@@ -114,7 +114,7 @@ def get_parser():
         help='model path', default=".."
     )
     parser_launch_enerzyme_scan.add_argument('-q', '--reference', type=str,
-        help='quantum chemistry parameters reference path'
+        help='TeraChem input file or scan config YAML (reference_pdb, freeze_index_types, sammt bond scan)'
     )
     parser_launch_enerzyme_scan.add_argument('-mc', '--model_config', type=str,
         help='model config path', default=None

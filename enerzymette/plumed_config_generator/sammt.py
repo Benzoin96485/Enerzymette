@@ -250,6 +250,21 @@ def _maybe_append_proton_transfer(
     )
 
 
+def get_sammt_scan_bond_indices(
+    reference_pdb_file: str,
+    substrate: str,
+    nucleophile: str,
+) -> Tuple[int, int]:
+    """Return 0-based methyl-carbon and nucleophile indices for ASE bond scan (CE–Nu)."""
+    _, index_methyl_carbon, index_nucleophile = get_sammt_index(
+        0,
+        reference_pdb_file,
+        substrate,
+        nucleophile,
+    )
+    return index_methyl_carbon, index_nucleophile
+
+
 def get_sammt_index(
     idx_start_from: int,
     reference_pdb_file: str,

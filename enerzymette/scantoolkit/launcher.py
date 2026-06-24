@@ -39,7 +39,9 @@ class EnerzymeScanLauncher:
         self.plumed_patch_key = plumed_patch_key
         self.plumed_cv_config = plumed_cv_config or {}
         self.plumed_patch = get_plumed_patch(plumed_patch_key) if plumed_patch_key is not None else None
-        self.reference = self.parse_reference(reference_path, "terachem_input")
+        from .io import infer_reference_type
+        self.reference_type = infer_reference_type(reference_path)
+        self.reference = self.parse_reference(reference_path, self.reference_type)
         self.constraint_freeze_xyz = self.reference.get("constraint_freeze", {}).get("xyz", [])
         self.constraint_scan = self.reference.get("constraint_scan", {})
         if plumed_patch_key is not None:
@@ -58,8 +60,14 @@ class EnerzymeScanLauncher:
                 logger.warning(f"Reference file {reference_path} does not exist")
             else:
                 return parse_terachem_input(reference_path)
-        else:
-            raise NotImplementedError(f"Reference type {reference_type} is not supported")
+        if reference_type == "scan_config":
+            logger.info(f"Parsing system information from scan config {reference_path}")
+            from .io import parse_scan_config
+            if not os.path.exists(reference_path):
+                logger.warning(f"Reference file {reference_path} does not exist")
+                return {"main": {}, "constraint_freeze": {}, "constraint_scan": {}}
+            return parse_scan_config(reference_path, self.output_path)
+        raise NotImplementedError(f"Reference type {reference_type} is not supported")
     
     def copy_local_minima(self, reactant_name: str, product_name: str):
         '''
@@ -319,13 +327,14 @@ class EnerzymeScanLauncher:
         target_value: Optional[float]=None,
         target_structure_path: Optional[str]=None,
     ):
+        idx_start_from = 0 if self.reference_type == "scan_config" else 1
         base_config = {
             "Simulation": {
                 "environment": "ase",
                 "dtype": "float64",
                 "cuda": True,
                 "task": task,
-                "idx_start_from": 1,
+                "idx_start_from": idx_start_from,
                 "neighbor_list": "full",
                 "constraint": {
                     "fix_atom": {
@@ -345,7 +354,6 @@ class EnerzymeScanLauncher:
         if task == "plumed_scan":
             if self.plumed_patch_key is None:
                 raise ValueError("plumed_scan task requires plumed_patch_key")
-            idx_start_from = base_config["Simulation"]["idx_start_from"]
             initial_structure = ase.io.read(initial_structure_path, index=-1)
             x0, x1, num, rc = resolve_scan_endpoints(
                 initial_structure,
@@ -378,18 +386,20 @@ class EnerzymeScanLauncher:
                 if constraint_type == "bond":
                     index0 = constraint_params["i0"]
                     index1 = constraint_params["i1"]
+                    ase_i0 = index0 - idx_start_from
+                    ase_i1 = index1 - idx_start_from
                     initial_structure = ase.io.read(initial_structure_path, index=-1)
-                    initial_value = initial_structure.get_distance(index0 - 1, index1 - 1)
+                    initial_value = initial_structure.get_distance(ase_i0, ase_i1)
                     if target_value is None:
                         if target_structure_path is None:
                             from mendeleev import element
-                            element0 = element(initial_structure.symbols[index0 - 1])
-                            element1 = element(initial_structure.symbols[index1 - 1])
+                            element0 = element(initial_structure.symbols[ase_i0])
+                            element1 = element(initial_structure.symbols[ase_i1])
                             target_value = (element0.covalent_radius_pyykko + element1.covalent_radius_pyykko) / 100 # (pm to Angstrom)
                             logger.info(f"Target value is set to {target_value} Angstrom based on single-bond Pyykko covalent radii for bond between atoms {index0} and {index1}")
                         else:
                             target_structure = ase.io.read(target_structure_path, index=-1)
-                            target_value = target_structure.get_distance(index0 - 1, index1 - 1)
+                            target_value = target_structure.get_distance(ase_i0, ase_i1)
                             logger.info(f"Target value is set to {target_value} Angstrom based on distance between atoms {index0} and {index1} in reference target structure {target_structure_path}")
                     base_config["Simulation"]["sampling"] = {
                         "cv": "distance",
