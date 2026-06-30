@@ -67,8 +67,60 @@ Then run the ORCA job as usual.
 
 ## Enerzyme Scan Launcher
 
-Flexible reaction-coordinate scans and PLUMED steered MD use CV plugins under `enerzymette/plumed_config_generator/`. See [plumed_config_generator/README.md](enerzymette/plumed_config_generator/README.md) for the plugin contract, `task: plumed_scan` / `sampling.cv: plumed` YAML schema, and active-learning `--initial-scan` options.
+Automates NNP-driven flexible bond scans. For each elementary reaction it calls `enerzyme simulate` to optimize the reactant, scan a bond-distance CV, optimize the product, and analyze the energy profile. System settings (charge, spin, frozen atoms, scan bond) are read from a TeraChem reference input (`-q`). If an intermediate minimum appears left of the transition state, the launcher chains another scan from that structure. Final results go to `rate_determining_ts/` (TS geometry and `results.json`).
+
+Usage:
+```
+enerzymette enerzyme_scan \
+    -r <reactant.xyz> \
+    -o <output_dir> \
+    -m <model_dir> \
+    -q <scan.in> \
+    -n 25
+```
+
+- `-r` — initial reactant structure (typically a DFT-optimized reactant).
+- `-q` — TeraChem input with `constraint_freeze` and `constraint_scan` (bond indices); parsed by `terachem/io.py`.
+- `-n` — number of scan steps along the bond CV.
+
+**Supporting utilities:**
+
+- `scantoolkit/launcher.py` — `EnerzymeScanLauncher` (opt → scan → opt loop and reaction chaining).
+- `scantoolkit/io.py` — `update_terachem_scan` CLI to refresh coordinates in a scan input after structure update.
+- `altoolkit/get_index.py` — select backbone/Cα atom indices from PDB for constraint setup.
+- `mep_util.py` — CI, intermediate, and product-frame detection on the scan path.
+
+Also supports PLUMED CV scans (`-pp`, `-psc`), YAML `scan_config` as an alternative to TeraChem input, and `altoolkit/launcher.py` for active-learning steered MD.
 
 ## Enerzyme NEB Launcher
+
+Automates NNP-driven NEB: ORCA optimizes the image chain while Enerzyme supplies energies and gradients via an external optimizer (same ExtOpt pattern as [orca_terachem_request](#request-terachem-calculation-for-orca-optimizer)). The launcher starts `enerzyme listen`, writes ORCA NEB input plus a wrapper calling `enerzyme request`, monitors stdout for intermediate minima, and chains sub-reactions when needed. Requires `ORCA_PATH`.
+
+Usage:
+```
+enerzymette enerzyme_neb \
+    -r <reactant.xyz> \
+    -p <product.xyz> \
+    -o <output_dir> \
+    -m <model_dir> \
+    -q <reference.in> \
+    -c <server.yaml> \
+    -n 8 -b 5001 -i stdout
+```
+
+- `-q` — Reference TeraChem input file for charge, spin, and `constraint_freeze` atoms.
+- `-c` — Enerzyme server config (`cuda`, `dtype`, `neighbor_list`, …).
+- `-n` — number of NEB images (including endpoints).
+- `-b` — server port; `-i stdout` interrupts ORCA when an intermediate minimum is detected.
+
+**Supporting utilities:**
+
+- `nebtoolkit/launcher.py` — `EnerzymeNEBLauncher` (server lifecycle, ORCA subprocess, restart/backtrack, chaining).
+- `nebtoolkit/io.py` — `write_orca_neb_in` for ORCA NEB input generation; MEP parsing from ORCA output.
+- `nebtoolkit/analysis.py`, `nebtoolkit/network.py` — convergence/CI checks and port selection.
+- `altoolkit/get_index.py` — backbone atom indices for frozen constraints in NEB input.
+- `mep_util.py` — intermediate and rate-determining-step detection (shared with the scan launcher).
+
+Also configurable: spring constants (`--min_spring_constant` / `--max_spring_constant`), ORCA optimizer (`--optimization_method`), and `-i none` to disable early interruption.
 
 

@@ -5,8 +5,9 @@ import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
 from ..plumed_config_generator import (
+    get_config_generator_name,
     get_plumed_patch,
-    get_scan_config_generator_name,
+    get_scan_method_name,
     resolve_scan_endpoints,
 )
 from ..mep_util import analyze_scan_path, find_new_name
@@ -508,26 +509,30 @@ class active_learning_launcher:
         plumed_config = self._plumed_config_from_simulation(simulation_config)
         if not plumed_config or not plumed_config.get("proton_transfer"):
             return simulation_config
+        proton_transfer_config = plumed_config["proton_transfer"]
+        if proton_transfer_config is True:
+            proton_transfer_config = {"enabled": True}
+            plumed_config["proton_transfer"] = proton_transfer_config
 
         pool_idx, entry = self._get_structure_pool_entry(iteration)
         scope_file = self._pt_scope_path_for_entry(entry["path"])
         state_pool_file = self._pt_state_path_for_entry(entry["path"])
 
-        plumed_config["pt_scope_file"] = scope_file
+        proton_transfer_config["scope_file"] = scope_file
         state_sim_file = os.path.join(simulation_path, "opes_state.data")
-        plumed_config["pt_state_file"] = state_sim_file
+        proton_transfer_config["state_file"] = state_sim_file
         if os.path.exists(self.output_mol_path):
-            plumed_config["topology_mol_file"] = self.output_mol_path
+            proton_transfer_config["topology_mol_file"] = self.output_mol_path
 
         if entry.get("run") and os.path.exists(state_pool_file):
-            plumed_config["pt_restart"] = True
+            proton_transfer_config["restart"] = True
             shutil.copy(state_pool_file, state_sim_file)
             logger.info(
                 f"Iteration {iteration}: OPES restart for pool entry {pool_idx} "
                 f"from {state_pool_file}"
             )
         else:
-            plumed_config["pt_restart"] = False
+            proton_transfer_config["restart"] = False
 
         return simulation_config
 
@@ -544,9 +549,11 @@ class active_learning_launcher:
         pool_idx, entry = self._get_structure_pool_entry(iteration)
         state_pool_file = self._pt_state_path_for_entry(entry["path"])
         plumed_config = self._plumed_config_from_simulation(simulation_config) or {}
-        state_sim_file = plumed_config.get(
-            "pt_state_file",
-            os.path.join(simulation_path, "opes_state.data"),
+        proton_transfer_config = plumed_config.get("proton_transfer")
+        if proton_transfer_config is True:
+            proton_transfer_config = {}
+        state_sim_file = (proton_transfer_config or {}).get(
+            "state_file", os.path.join(simulation_path, "opes_state.data")
         )
         if os.path.exists(state_sim_file):
             shutil.copy(state_sim_file, state_pool_file)
@@ -594,7 +601,8 @@ class active_learning_launcher:
                 target_structure_path=scan_target_structure_path,
             )
             config["Simulation"]["plumed_config_generator"] = {
-                "name": get_scan_config_generator_name(self.plumed_patch_key),
+                "name": get_config_generator_name(self.plumed_patch_key),
+                "method": get_scan_method_name(self.plumed_patch_key),
             }
             config["Simulation"]["sampling"] = {
                 "cv": "plumed",

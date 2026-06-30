@@ -10,30 +10,49 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from types import ModuleType
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type
 
 import ase.io
 
 from ._engine import (
+    PlumedConfigGenerator,
     ReactionCoordinate,
     generate_scan_restraint,
     generate_steered_md,
 )
+from .proton_transfer import (
+    LocalOpesProtonTransferPlugin,
+    PROTON_TRANSFER_PLUGINS,
+    ProtonTransferConfig,
+    ProtonTransferPlugin,
+    ProtonTransferScope,
+    append_optional_proton_transfer,
+    build_proton_transfer_config,
+    register_proton_transfer_plugin,
+)
 
 __all__ = [
     "PLUMED_CV_PLUGINS",
+    "PlumedConfigGenerator",
     "PlumedCvPluginSpec",
+    "LocalOpesProtonTransferPlugin",
+    "PROTON_TRANSFER_PLUGINS",
+    "ProtonTransferConfig",
+    "ProtonTransferPlugin",
+    "ProtonTransferScope",
+    "append_optional_proton_transfer",
+    "build_proton_transfer_config",
     "ReactionCoordinate",
     "generate_scan_restraint",
     "generate_steered_md",
+    "get_config_generator_class",
+    "get_config_generator_name",
     "get_plumed_patch",
-    "get_reaction_coordinate_fn",
-    "get_scan_config_fn",
-    "get_scan_config_generator_name",
-    "get_steered_config_fn",
-    "get_steered_config_generator_name",
+    "get_scan_method_name",
+    "get_steered_method_name",
     "list_plumed_cv_plugin_keys",
     "register_plumed_cv_plugin",
+    "register_proton_transfer_plugin",
     "resolve_scan_endpoints",
 ]
 
@@ -44,19 +63,10 @@ class PlumedCvPluginSpec:
 
     key: str
     module_name: str
+    class_name: str
+    steered_method_name: str = "standard_steered_md"
+    scan_method_name: str = "scan"
     description: str = ""
-
-    @property
-    def reaction_coordinate_fn_name(self) -> str:
-        return f"get_{self.key}_reaction_coordinate"
-
-    @property
-    def steered_config_fn_name(self) -> str:
-        return f"get_{self.key}_config"
-
-    @property
-    def scan_config_fn_name(self) -> str:
-        return f"get_{self.key}_scan_config"
 
 
 # Registry of CV plugins shipped with Enerzymette. Keys are used by CLI
@@ -65,6 +75,7 @@ PLUMED_CV_PLUGINS: Dict[str, PlumedCvPluginSpec] = {
     "sammt": PlumedCvPluginSpec(
         key="sammt",
         module_name=".sammt",
+        class_name="SAMMTConfigGenerator",
         description=(
             "SAM methyltransferase coordinate dd = d(S–CE) − d(CE–Nu); "
             "indices from PDB (SAM SD/CE + substrate nucleophile) or explicit indices."
@@ -77,6 +88,9 @@ def register_plumed_cv_plugin(
     key: str,
     module_name: str,
     *,
+    class_name: str,
+    steered_method_name: str = "standard_steered_md",
+    scan_method_name: str = "scan",
     description: str = "",
     overwrite: bool = False,
 ) -> None:
@@ -84,13 +98,18 @@ def register_plumed_cv_plugin(
 
     ``module_name`` is either a dotted import path or a relative name under
     ``enerzymette.plumed_config_generator`` (e.g. ``".my_cv"``).
-    The target module must implement the function names implied by ``key``;
-    see ``README.md``.
+    The target module must expose ``class_name`` as a ``PlumedConfigGenerator``
+    subclass; see ``README.md``.
     """
     if key in PLUMED_CV_PLUGINS and not overwrite:
         raise ValueError(f"PLUMED CV plugin {key!r} is already registered")
     PLUMED_CV_PLUGINS[key] = PlumedCvPluginSpec(
-        key=key, module_name=module_name, description=description
+        key=key,
+        module_name=module_name,
+        class_name=class_name,
+        steered_method_name=steered_method_name,
+        scan_method_name=scan_method_name,
+        description=description,
     )
 
 
@@ -113,14 +132,21 @@ def _load_plugin_module(key: str) -> ModuleType:
     return import_module(spec.module_name)
 
 
-def _get_plugin_callable(key: str, fn_name: str) -> Callable:
+def get_config_generator_class(key: str) -> Type[PlumedConfigGenerator]:
+    spec = _plugin_spec(key)
     module = _load_plugin_module(key)
-    fn = getattr(module, fn_name, None)
-    if fn is None:
+    cls = getattr(module, spec.class_name, None)
+    if cls is None:
         raise AttributeError(
-            f"PLUMED CV plugin {key!r} ({module.__file__}) has no function {fn_name!r}"
+            f"PLUMED CV plugin {key!r} ({module.__file__}) has no class "
+            f"{spec.class_name!r}"
         )
-    return fn
+    if not issubclass(cls, PlumedConfigGenerator):
+        raise TypeError(
+            f"PLUMED CV plugin {key!r} class {spec.class_name!r} must inherit "
+            "PlumedConfigGenerator"
+        )
+    return cls
 
 
 def get_plumed_patch(key: str) -> str:
@@ -128,26 +154,16 @@ def get_plumed_patch(key: str) -> str:
     return _load_plugin_module(key).__file__
 
 
-def get_reaction_coordinate_fn(key: str) -> Callable:
-    return _get_plugin_callable(key, _plugin_spec(key).reaction_coordinate_fn_name)
+def get_config_generator_name(key: str) -> str:
+    return _plugin_spec(key).class_name
 
 
-def get_steered_config_fn(key: str) -> Callable:
-    return _get_plugin_callable(key, _plugin_spec(key).steered_config_fn_name)
+def get_steered_method_name(key: str) -> str:
+    return _plugin_spec(key).steered_method_name
 
 
-def get_scan_config_fn(key: str) -> Callable:
-    return _get_plugin_callable(key, _plugin_spec(key).scan_config_fn_name)
-
-
-def get_steered_config_generator_name(key: str) -> str:
-    """``plumed_config_generator.name`` for steered MD (``task: plumed``)."""
-    return _plugin_spec(key).steered_config_fn_name
-
-
-def get_scan_config_generator_name(key: str) -> str:
-    """``plumed_config_generator.name`` for flexible scan (``task: plumed_scan``)."""
-    return _plugin_spec(key).scan_config_fn_name
+def get_scan_method_name(key: str) -> str:
+    return _plugin_spec(key).scan_method_name
 
 
 def resolve_scan_endpoints(
@@ -160,14 +176,20 @@ def resolve_scan_endpoints(
     target_structure_path: Optional[str] = None,
 ) -> Tuple[float, float, int, ReactionCoordinate]:
     """Pick scan endpoints x0/x1 from a structure and :class:`ReactionCoordinate` bounds."""
-    rc_fn = get_reaction_coordinate_fn(plumed_patch_key)
-    rc = rc_fn(system, idx_start_from=idx_start_from, **plumed_cv_config)
+    generator_cls = get_config_generator_class(plumed_patch_key)
+    generator = generator_cls(system, idx_start_from=idx_start_from, **plumed_cv_config)
+    rc = generator.build_reaction_coordinate(**plumed_cv_config)
     x0 = rc.initial_value
     if target_value is not None:
         x1 = target_value
     elif target_structure_path is not None:
         target_system = ase.io.read(target_structure_path, index=-1)
-        target_rc = rc_fn(target_system, idx_start_from=idx_start_from, **plumed_cv_config)
+        target_generator = generator_cls(
+            target_system,
+            idx_start_from=idx_start_from,
+            **plumed_cv_config,
+        )
+        target_rc = target_generator.build_reaction_coordinate(**plumed_cv_config)
         x1 = target_rc.initial_value
     else:
         dist_to_lower = abs(x0 - rc.lower_bound)

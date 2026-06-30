@@ -1,96 +1,29 @@
-# PLUMED collective-variable plugins
+# PLUMED Config Generators
 
-Enerzymette defines **reaction-coordinate (CV) plugins** that build PLUMED input lines. Launchers pass the plugin module to Enerzyme via `enerzyme simulate -pp <path>`. Enerzyme loads that module and calls a named generator function to write `plumed.dat` (see `_get_plumed_config` in Enerzyme’s `simulator.py`).
+Enerzymette builds PLUMED input through class-based generator plugins. A plugin is a Python module that exposes a `PlumedConfigGenerator` subclass. Enerzyme receives the plugin module through `enerzyme simulate -pp <path>`, instantiates the configured class with the current `ase.Atoms` object plus YAML parameters, and calls the configured method to produce `plumed.dat`.
 
-System-agnostic scheduling (steered MD / per-step scan restraints) lives in `_engine.py`. Each plugin module supplies chemistry-specific CV definitions and bounds.
+The design separates three layers:
 
-## Built-in registry
+- `PlumedConfigGenerator` in `_engine.py`: system-independent workflow methods for steered MD, naive steered MD, scan restraints, and PLUMED unit preamble.
+- Chemistry-specific generator subclasses such as `SAMMTConfigGenerator` in `sammt.py`: atom discovery and main reaction-coordinate definition.
+- Proton-transfer plugins in `proton_transfer.py`, such as `local_opes`: optional auxiliary CV/bias builders that can be inserted into any generator through `proton_transfer`.
 
-Plugin keys are registered in `PLUMED_CV_PLUGINS` (`__init__.py`). CLI flags `-pp` / `--plumed_patch` take a **key** (e.g. `sammt`), not a file path; launchers resolve the key to the module path with `get_plumed_patch(key)`.
+## User Interface
 
-| Key | Module | Description |
-|-----|--------|-------------|
-| `sammt` | `sammt.py` | SAM methyltransferase coordinate `dd = d1 − d0` |
-
-List keys at runtime: `from enerzymette.plumed_config_generator import list_plumed_cv_plugin_keys`.
-
-To add a plugin in another package, implement the contract below and call `register_plumed_cv_plugin("mykey", "my_package.plumed_mykey")` before launching.
-
-## Plugin contract
-
-For plugin key `<key>`, the module must expose three callables (names are fixed):
-
-| Function | Role |
-|----------|------|
-| `get_<key>_reaction_coordinate(system, idx_start_from, **params) -> ReactionCoordinate` | Define CV preamble, bounds, and current value on `system`. |
-| `get_<key>_config(system, integrate_config, idx_start_from, **params) -> List[str]` | Steered MD: full PLUMED lines (`MOVINGRESTRAINT` schedule). Typically `generate_steered_md(rc, integrate_config)`. |
-| `get_<key>_scan_config(system, integrate_config, idx_start_from, target_value, **params) -> List[str]` | One scan point: `RESTRAINT` at `target_value`. Typically `generate_scan_restraint(rc, target_value)`. |
-
-`ReactionCoordinate` fields (`_engine.py`):
-
-- `preamble`: PLUMED lines before restraints (`UNITS`, `DISTANCE`, `COMBINE`, walls, …)
-- `cv_name`: restraint argument (e.g. `dd`)
-- `lower_bound`, `upper_bound`, `initial_value`: CV range and value on the input structure (Å or plugin units)
-- `dump_interval`: `PRINT` / `FLUSH` stride
-- `kappa` (optional): restraint force constant (default ≈ 1000 kcal/mol)
-- `print_args` (optional): `PRINT ARG=…` list; steered MD uses `mr.*`, scan substitutes `r.*`
-
-Enerzyme merges `sampling.params.plumed_config` into the generator kwargs. For scan steps it also passes `target_value` when regenerating `plumed.dat` each point.
-
-Reference implementation: `sammt.py`.
-
-## Enerzyme YAML schema
-
-### Steered MD (active learning, biased dynamics)
-
-Unchanged from legacy SAMMT workflows:
+A simulation YAML selects a generator class and one method:
 
 ```yaml
 Simulation:
   task: plumed
   idx_start_from: 1
   plumed_config_generator:
-    name: get_sammt_config          # get_<key>_config
+    name: SAMMTConfigGenerator
+    method: standard_steered_md
   integrate:
     integrator: Langevin
     n_step: 100000
-    # ...
-  sampling:
-    params:
-      plumed_config:                # forwarded to the generator (**kwargs)
-        dump_interval: 20
-        lower_bound: -1.5
-        upper_bound: 1.5
-        reference_pdb_file: ref.pdb
-        substrate: ASP
-        nucleophile: OD2
-System:
-  structure_file: initial.xyz
-```
-
-#### Optional proton-transfer OPES (SAM-MT only)
-
-When `proton_transfer: true` is set under `plumed_config`, steered MD is unchanged and an
-OPES-Explore bias on a proton-transfer CV is appended. Defaults keep the feature off; omit
-the keys below for legacy behaviour.
-
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `proton_transfer` | `false` | Enable proton-transfer OPES alongside steered MD |
-| `proton_hbond_coeff` | `1.0` | H-bond cutoff = (r_donor + r_H) × coeff (mendeleev covalent radius, pm→Å) |
-| `acceptor_radius` | `4.0` | Acceptor cutoff = fixed distance (Å) from donor to N/O atoms |
-| `topology_mol_file` | — | Optional RDKit-readable `.mol` topology. When present, acceptors are restricted to O atoms with fewer than 2 heavy-atom bonds and N atoms with fewer than 3 heavy-atom bonds |
-| `opes_pace` | `20` | OPES `PACE` (steps) |
-| `opes_barrier` | `1.0` | OPES `BARRIER` in kJ/mol |
-| `opes_biasfactor` | `15.0` | OPES `BIASFACTOR` (must be > 1 for explore mode) |
-| `pt_scope_file` | — | Sidecar JSON with donor / proton / acceptor indices (written once) |
-| `pt_restart` | `false` | Add PLUMED `RESTART` and `STATE_RFILE` |
-| `pt_state_file` | `opes_state.data` | OPES state filename in the run directory |
-| `opes_state_wstride` | auto | `STATE_WSTRIDE`; default picks a divisor of `n_step` so the final step is checkpointed (ASE has no CPT events) |
-
-Example (standalone `enerzyme simulate`):
-
-```yaml
+    time_step: 0.5
+    temperature_in_K: 500
   sampling:
     params:
       plumed_config:
@@ -100,36 +33,17 @@ Example (standalone `enerzyme simulate`):
         reference_pdb_file: cluster-capped.pdb
         substrate: G
         nucleophile: "O2'"
-        proton_transfer: true
-        pt_scope_file: structure_pool/000.pt_scope.json
-        topology_mol_file: cluster.mol
+System:
+  structure_file: initial.xyz
 ```
 
-Active-learning launcher (`altoolkit/launcher.py`) injects `pt_scope_file`, `pt_restart`,
-`topology_mol_file` (when `enerzyme bond` has generated `cluster.mol`), and copies
-`opes_state.data` per structure-pool entry when `proton_transfer` is enabled in
-the base simulation YAML. Sidecars live next to pool XYZ files:
-`structure_pool/NNN.pt_scope.json`, `structure_pool/NNN.opes_state.data`.
+Enerzyme passes these values to `SAMMTConfigGenerator(system, ...)`, then calls `standard_steered_md(...)`. Supported base methods are:
 
-OPES checkpoints are written via `STATE_WSTRIDE` (not CPT), because Enerzyme/ASE does not
-signal checkpoint events to PLUMED. After each simulation, the launcher copies the final
-`opes_state.data` from the run directory into the pool sidecar for the next restart.
+- `standard_steered_md`: starts from the current main reaction coordinate and runs one round trip across `[lower_bound, upper_bound]`.
+- `naive_steered_md`: first pulls the coordinate to the nearest bound over `warmup_steps`, then pulls to the opposite bound.
+- `scan`: applies a static PLUMED `RESTRAINT` at `target_value`; Enerzyme supplies `target_value` for each `task: plumed_scan` point. Scan configs do not insert proton-transfer plugins, even if `proton_transfer` is present in `plumed_config`.
 
-**PLUMED OPES module:** the default conda `plumed` build has `module opes off`. Load
-`module load plumed/2.9.2-opes` (or set `PLUMED_KERNEL` to the opes-enabled library)
-before running simulations with `proton_transfer: true`.
-
-Run with the plugin on `PYTHONPATH`:
-
-```bash
-enerzyme simulate -c config.yaml -o out/ -m model_dir/ -pp /path/to/sammt.py
-```
-
-Enerzymette AL passes `-pp` automatically from `get_plumed_patch(sammt)`.
-
-### PLUMED flexible scan (`plumed_scan`)
-
-CV-plugin scans use **`task: plumed_scan`** and **`sampling.cv: plumed`** (not ASE `FixBondLengths` / `cv: distance`).
+For scan jobs, use the same generator class with `method: scan`:
 
 ```yaml
 Simulation:
@@ -138,153 +52,201 @@ Simulation:
   optimize:
     optimizer: LBFGS
   plumed_config_generator:
-    name: get_sammt_scan_config     # get_<key>_scan_config
+    name: SAMMTConfigGenerator
+    method: scan
   sampling:
     cv: plumed
     params:
-      x0: 0.42                      # scan start (often RC value on reactant)
-      x1: -1.2                      # scan end
-      num: 25                       # number of restrained optimisations
-      plumed_config:                # same dict as steered MD (bounds, indices, …)
+      x0: 0.4
+      x1: -1.4
+      num: 25
+      plumed_config:
         dump_interval: 20
-        lower_bound: -1.5
-        upper_bound: 1.5
-        # ...
-System:
-  structure_file: reactant.xyz
+        lower_bound: -2
+        upper_bound: 2
+        reference_pdb_file: cluster-capped.pdb
+        substrate: G
+        nucleophile: "O2'"
 ```
 
-Per step, Enerzyme calls `get_<key>_scan_config(..., target_value=x)` with `x` linearly spaced from `x0` to `x1`. Output trajectory: `scan_optim.xyz` (same as legacy `task: scan`).
+## SAMMT Generator
 
-**Legacy bond scan** (TeraChem / ASE): `task: scan`, `sampling.cv: distance`, `params.i0` / `i1` — unchanged; no `-pp`.
+`SAMMTConfigGenerator` is for SAM-dependent methyltransferase systems. Its main coordinate is:
 
-### Endpoint selection (launchers)
+```text
+dd = d(CE, nucleophile) - d(SD, CE)
+```
 
-`resolve_scan_endpoints` in `__init__.py` sets `x0` from the reactant structure’s `initial_value` and `x1` from, in order:
-
-1. explicit `target_value` (product CV value), or
-2. CV value on a product structure (`target_structure_path`), or
-3. whichever bound (`lower_bound` / `upper_bound`) is farther from `x0`.
-
-Scantoolkit and altoolkit write the resulting `x0`, `x1`, `num` into the YAML above.
-
-## Enerzymette CLI
-
-### Scan launcher (`enerzymette launch_enerzyme_scan`)
-
-| Flag | Meaning |
-|------|---------|
-| `-pp` / `--plumed_patch` | CV plugin key (e.g. `sammt`). Enables `plumed_scan` instead of ASE bond scan. |
-| `-psc` / `--plumed_cv_config` | YAML file of `plumed_config` kwargs (bounds, PDB reference, atom indices). Required when `-pp` is set. |
-
-With `-pp`, each elementary reaction emits `task: plumed_scan` and passes `-pp` to `enerzyme simulate`.
-
-### Active learning (`enerzymette enerzyme_active_learning`)
-
-| Flag | Meaning |
-|------|---------|
-| `-pp` / `--plumed_patch` | CV plugin key (required for PLUMED steered MD). |
-| `--initial-scan` | Before iteration 0, run the iterative flexible scan (same CV plugin and bounds as steered MD) from the initial structure. |
-| `-nis` / `--n_initial_scan_steps` | Scan points per elementary reaction in the initial scan (default `25`). |
-| `--initial-structures-config` | YAML manifest for multi-system initial structure pool. |
-
-**Initial scan workflow** (`--initial-scan`):
-
-1. Under `<output>/initial_scan/`, run chained `plumed_scan` jobs (mirrors scantoolkit).
-2. Collect frames from `local_minima/` into a **structure pool** (`structure_pool.json` at output root).
-3. Each AL iteration rotates through pool entries: first use copies the frame as `initial_structure.xyz`; on reuse, optional presimulation MD (`-np`) updates the pool entry from the last frame.
-
-**Without `--initial-scan`:** pool is a single copy of the initial structure. With `n_presimulation_steps_per_iteration > 0`, presimulation chaining matches the previous AL behavior; with `n_presimulation == 0`, the last steered-MD frame is reused as today.
-
-Steered MD configs still come from your `-sc` simulation YAML (`task: plumed`, `get_<key>_config`). Initial scan configs are generated by altoolkit using `get_<key>_scan_config`.
-
-**Multi-system workflow** (`--initial-structures-config`):
-
-Use a manifest to seed multiple systems into one structure pool. Each iteration rotates through entries with `pool_idx = iteration % len(entries)` and loads that entry's own simulation YAML.
+Indices can come from a reference PDB:
 
 ```yaml
-systems:
-  - name: COMT_2ZVJ
-    reference_pdb: /path/to/A300_A301_A302.pdb
-    reference_sdf: /path/to/template.sdf          # optional
-    reference_xyz: /path/to/initial.xyz             # optional; falls back to simulation_config.System.structure_file
-    simulation_config: /path/to/simulation.yaml
-  - name: COMT_4XUD
-    reference_pdb: /path/to/A301_A302_A303.pdb
-    simulation_config: /path/to/simulation.yaml
+plumed_config:
+  reference_pdb_file: cluster-capped.pdb
+  substrate: G
+  nucleophile: "O2'"
 ```
 
-Field semantics:
+Or from explicit atom indices in the same convention as `Simulation.idx_start_from`:
 
-- `name`: required identifier for logs and pool metadata.
-- `simulation_config`: required per-system steered-MD YAML.
-- `reference_pdb`: required; must match `plumed_config.reference_pdb_file` in the simulation YAML when that field is present.
-- `reference_sdf`: optional per-system template SDF.
-- `reference_xyz`: optional initial structure copied into `structure_pool/NNN.xyz`.
-
-In multi-system mode, do not pass global `-rp`, `-ts`, or `-ix`; specify those per system in the manifest instead.
-
-Pool state is written to `<output>/structure_pool.json` with per-entry metadata:
-
-```json
-{
-  "path": ".../structure_pool/000.xyz",
-  "run": false,
-  "name": "COMT_2ZVJ",
-  "simulation_config": ".../simulation.yaml",
-  "reference_pdb": ".../A300_A301_A302.pdb",
-  "reference_sdf": ".../template.sdf",
-  "source_structure": ".../initial.xyz"
-}
+```yaml
+plumed_config:
+  index_sulphur: 292
+  index_methyl_carbon: 293
+  index_nucleophile: 388
 ```
 
-Unsupported combinations (raise `NotImplementedError` or `ValueError`):
+The descriptive index names exposed by `get_indices()` are `sulphur`, `sulfur`, `methyl_carbon`, and `nucleophile`. Proton-transfer configs can refer to these names, for example `donor: nucleophile`.
 
-- `--initial-structures-config` + `--initial-scan`
-- `--initial-structures-config` + `proton_transfer: true` in any system simulation YAML
-- `--initial-structures-config` + global `-rp/-ts/-ix`
+## Proton Transfer
 
-On reuse in multi-system mode, each entry keeps its own geometry: steered MD updates that entry's pool XYZ, and the next visit to the same system starts from that entry rather than the previous iteration's trajectory.
+Proton-transfer support lives outside `_engine.py` in `proton_transfer.py`. The base generator only asks that module whether a configured plugin should append extra PLUMED lines.
 
-`enerzyme bond` runs once per manifest system at launch. Outputs are namespaced under `<output>/topology/<name>/` to avoid overwriting the single-system `cluster.*` files at the output root:
+Enable proton-transfer OPES by adding a nested `proton_transfer` mapping under `plumed_config`:
 
-```
-<output>/topology/COMT_2ZVJ/cluster.mol
-<output>/topology/COMT_2ZVJ/cluster.png
-<output>/topology/COMT_4XUD/cluster.mol
-...
-```
-
-Each pool entry stores `cluster_mol_path`, and extraction uses that path as `Extractor.reference_mol_path` for the active iteration's system.
-
-## Dual scan paths (summary)
-
-```mermaid
-flowchart LR
-  subgraph legacy [Legacy ASE scan]
-    A[task: scan] --> B[cv: distance]
-    B --> C[FixBondLengths]
-  end
-  subgraph plumed [CV plugin scan]
-    D[task: plumed_scan] --> E[cv: plumed]
-    E --> F[get_key_scan_config]
-    F --> G[RESTRAINT per step]
-  end
+```yaml
+plumed_config:
+  dump_interval: 20
+  lower_bound: -2
+  upper_bound: 2
+  reference_pdb_file: cluster-capped.pdb
+  substrate: G
+  nucleophile: "O2'"
+  proton_transfer:
+    enabled: true
+    plugin: local_opes
+    donor: nucleophile
+    flavor: nearest_distance
+    scope_file: structure_pool/000.pt_scope.json
+    state_file: opes_state.data
+    restart: false
+    topology_mol_file: cluster.mol
+    opes_barrier: 20
 ```
 
-## Adding a new plugin
+`local_opes` resolves a donor, donor-bound transfer proton(s), and nearby N/O acceptors. If `scope_file` exists, it reuses the saved scope; otherwise it resolves a new scope and writes it. If required atoms cannot be found, the generator warns and emits the main-coordinate PLUMED config without proton-transfer bias.
 
-1. Add `enerzymette/plumed_config_generator/mykey.py` implementing the three `get_mykey_*` functions.
-2. Register in `PLUMED_CV_PLUGINS` or via `register_plumed_cv_plugin("mykey", ".mykey")`.
-3. Point `-psc` / simulation `plumed_config` at the same parameter schema your `get_mykey_reaction_coordinate` expects.
-4. Golden-test steered output against a known `plumed.dat` if changing an existing coordinate.
+Important `proton_transfer` fields:
+
+- `enabled`: switch for inserting proton-transfer lines.
+- `plugin`: proton-transfer plugin key; currently `local_opes`.
+- `donor`: descriptive atom name from `get_indices()` or an explicit atom index. SAMMT defaults this to `nucleophile` when omitted.
+- `proton`: optional explicit proton selector or selector list.
+- `acceptor`: optional explicit acceptor selector or selector list.
+- `flavor`: `nearest_distance`, `coordination`, `grouped_acceptor`, or `coupled_dd_pt`. The default is `nearest_distance`.
+- `scope_file`: optional JSON sidecar for resolved donor/proton/acceptor indices.
+- `restart`: add PLUMED `RESTART` and read `state_file` as `STATE_RFILE`.
+- `state_file`: OPES state file written by `STATE_WFILE`.
+- `topology_mol_file`: optional RDKit-readable mol file used to filter chemically saturated N/O acceptors.
+- `opes_pace`, `opes_barrier`, `opes_biasfactor`, `opes_state_wstride`: OPES tuning.
+- `geometry_walls`, `max_donor_h_distance`, `max_donor_acceptor_distance`: optional walls used by nontrivial flavors.
+
+The default `nearest_distance` flavor defines a distance-gap CV from the selected donor-bound proton to the nearest acceptor. `coordination` uses coordination numbers, `grouped_acceptor` compares acceptor groups, and `coupled_dd_pt` combines proton transfer with the main `dd` coordinate and donor-acceptor contact.
+
+OPES requires a PLUMED build with the OPES module enabled, for example by loading an OPES-enabled PLUMED module or setting `PLUMED_KERNEL`.
+
+## Developer Interface
+
+To add a generator, create a module with a `PlumedConfigGenerator` subclass:
+
+```python
+from enerzymette.plumed_config_generator import PlumedConfigGenerator
+
+class MyConfigGenerator(PlumedConfigGenerator):
+    default_print_args = "rc,mr.*"
+
+    def get_indices(self):
+        return {"atom_a": self.index_a, "atom_b": self.index_b}
+
+    def define_main_rc(self):
+        return "rc", "rc: DISTANCE ATOMS=1,2 NOPBC"
+
+    def calc_main_rc(self):
+        return self.system.get_distance(0, 1, mic=False)
+```
+
+The base class constructor already records:
+
+- `system`: the current runtime `ase.Atoms` object.
+- `idx_start_from`: index convention used by user configs.
+- `preamble`: PLUMED unit preamble, defaulting to Angstrom/fs/kJ-mol units.
+- `reference_pdb`: path from `reference_pdb` or `reference_pdb_file`.
+- `reference_mol`: an RDKit mol object, loaded from `reference_mol_file` or `topology_mol_file` when available.
+- `proton_transfer_config`: parsed `ProtonTransferConfig`.
+
+Subclass constructors should accept chemistry-specific keyword arguments, call `super().__init__(system, **kwargs)`, resolve any atom indices, and store them on `self`.
+
+Register built-in or external generators with the registry in `__init__.py`:
+
+```python
+register_plumed_cv_plugin(
+    "mykey",
+    "my_package.my_plumed_module",
+    class_name="MyConfigGenerator",
+)
+```
+
+Launchers use the registry to write:
+
+```yaml
+plumed_config_generator:
+  name: MyConfigGenerator
+  method: standard_steered_md
+```
+
+The plugin module path for Enerzyme is resolved with `get_plumed_patch("mykey")`.
+
+## Proton-Transfer Plugin Interface
+
+To add another proton-transfer enhanced-sampling strategy, implement `ProtonTransferPlugin` and register an instance:
+
+```python
+from enerzymette.plumed_config_generator import (
+    ProtonTransferConfig,
+    ProtonTransferPlugin,
+    register_proton_transfer_plugin,
+)
+
+class MyProtonTransferPlugin(ProtonTransferPlugin):
+    name = "my_pt"
+
+    def append_to_plumed(
+        self,
+        generator,
+        plumed_config,
+        config: ProtonTransferConfig,
+        dump_interval: int,
+        integrate_config: dict,
+    ):
+        indices = generator.get_indices()
+        lines = list(plumed_config)
+        # Insert custom PT CV/bias lines before PRINT and update PRINT args.
+        return lines
+
+register_proton_transfer_plugin(MyProtonTransferPlugin())
+```
+
+The plugin receives the fully initialized `PlumedConfigGenerator`, so it can use `generator.system`, `generator.idx_start_from`, `generator.reference_pdb`, `generator.reference_mol`, `generator.get_indices()`, and the main reaction coordinate definition if needed. Users select it with:
+
+```yaml
+proton_transfer:
+  enabled: true
+  plugin: my_pt
+```
+
+`proton_transfer.py` also exposes reusable helpers used by `local_opes`, including `ProtonTransferScope`, `append_proton_transfer_to_plumed()`, `generate_proton_transfer_cv_lines()`, and `generate_opes_explore()`.
+
+## Launcher Integration
+
+`resolve_scan_endpoints()` instantiates the registered generator and uses `build_reaction_coordinate()` to compute the current coordinate. It chooses scan endpoints from an explicit target value, a target structure, or the farther configured bound.
+
+`altoolkit` and `scantoolkit` emit class-based scan configs automatically when a PLUMED plugin key is supplied. Active learning also injects per-structure `proton_transfer.scope_file`, `proton_transfer.state_file`, `proton_transfer.restart`, and `proton_transfer.topology_mol_file` when proton transfer is enabled in the base YAML.
 
 ## Debugging
 
-**`plumed_scan` / `--initial-scan` require an Enerzyme build where `_run_plumed_scan` calls `_get_plumed_config(target_value=x)` per scan point** (see `enerzyme/tasks/simulator.py`). Older installed `enerzyme` raises `TypeError: get_*_scan_config() missing ... 'target_value'`.
-
-Installed packages may be non-editable. Either reinstall Enerzyme from source, or prepend source trees to `PYTHONPATH`:
+Installed packages may be non-editable. During development, prepend source trees to `PYTHONPATH` or reinstall editable packages:
 
 ```bash
 export PYTHONPATH=/path/to/Enerzymette:/path/to/Enerzyme:$PYTHONPATH
 ```
+
+Use the `enerzyme-dev` conda environment for smoke tests in this workspace.

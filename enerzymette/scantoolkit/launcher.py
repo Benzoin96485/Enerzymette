@@ -8,8 +8,9 @@ from ase.units import kcal, mol
 from ..logger import logger
 from ..mep_util import analyze_scan_path, find_new_name
 from ..plumed_config_generator import (
+    get_config_generator_name,
     get_plumed_patch,
-    get_scan_config_generator_name,
+    get_scan_method_name,
     resolve_scan_endpoints,
 )
 
@@ -365,7 +366,8 @@ class EnerzymeScanLauncher:
                 target_structure_path=target_structure_path,
             )
             base_config["Simulation"]["plumed_config_generator"] = {
-                "name": get_scan_config_generator_name(self.plumed_patch_key),
+                "name": get_config_generator_name(self.plumed_patch_key),
+                "method": get_scan_method_name(self.plumed_patch_key),
             }
             base_config["Simulation"]["sampling"] = {
                 "cv": "plumed",

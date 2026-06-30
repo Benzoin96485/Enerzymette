@@ -1,7 +1,16 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple, Union
+import warnings
 
-from ase.units import kJ, kcal, mol
+from ase import Atoms
+from ase.units import fs, kJ, kcal, mol
+
+from .proton_transfer import (
+    ProtonTransferConfig,
+    append_optional_proton_transfer,
+    build_proton_transfer_config,
+)
 
 
 @dataclass
@@ -16,149 +25,200 @@ class ReactionCoordinate:
     print_args: Optional[str] = None
 
 
-@dataclass
-class ProtonTransferScope:
-    """ASE 0-based atom indices for proton-transfer CV."""
+class PlumedConfigGenerator(ABC):
+    """Abstract base class for dynamic PLUMED config generators.
 
-    index_donor: int
-    transfer_protons: List[int]
-    acceptors: List[int]
+    Subclasses provide chemistry-specific atom indexing and the main reaction
+    coordinate. This base class owns generic PLUMED workflows and optional
+    proton-transfer plugin insertion.
+    """
 
-    def to_dict(self) -> dict:
-        return {
-            "index_donor": self.index_donor,
-            "transfer_protons": list(self.transfer_protons),
-            "acceptors": list(self.acceptors),
-        }
+    default_cv_name: str = "rc"
+    default_print_args: Optional[str] = None
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "ProtonTransferScope":
-        return cls(
-            index_donor=int(data["index_donor"]),
-            transfer_protons=[int(i) for i in data["transfer_protons"]],
-            acceptors=[int(i) for i in data["acceptors"]],
+    def __init__(
+        self,
+        system: Atoms,
+        *,
+        integrate_config: Optional[dict] = None,
+        idx_start_from: int = 1,
+        preamble: Optional[List[str]] = None,
+        reference_pdb: Optional[str] = None,
+        reference_pdb_file: Optional[str] = None,
+        reference_mol=None,
+        reference_mol_file: Optional[str] = None,
+        topology_mol_file: Optional[str] = None,
+        proton_transfer: Optional[Union[bool, dict, ProtonTransferConfig]] = None,
+        proton_transfer_plugin: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        self.system = system
+        self.integrate_config = integrate_config or {}
+        self.idx_start_from = idx_start_from
+        self.preamble = preamble or [
+            f"UNITS LENGTH=A TIME={0.001 / fs} ENERGY={1 / kJ * mol}"
+        ]
+        self.reference_pdb = reference_pdb_file or reference_pdb
+        self.reference_mol = reference_mol
+        self.reference_mol_file = reference_mol_file or topology_mol_file
+        if self.reference_mol is None and self.reference_mol_file is not None:
+            self.reference_mol = self._load_reference_mol(self.reference_mol_file)
+        self.proton_transfer_config = build_proton_transfer_config(
+            proton_transfer,
+            proton_transfer_plugin=proton_transfer_plugin,
+            topology_mol_file=topology_mol_file,
         )
 
+    @staticmethod
+    def _load_reference_mol(path: str):
+        try:
+            from rdkit import Chem
+        except ImportError:
+            warnings.warn(
+                "RDKit is not available; reference_mol was not loaded.",
+                RuntimeWarning,
+            )
+            return None
+        mol = Chem.MolFromMolFile(path, removeHs=False, sanitize=False)
+        if mol is None:
+            warnings.warn(f"Could not load reference mol from {path}", RuntimeWarning)
+        return mol
 
-def default_opes_state_wstride(n_step: Optional[int], dump_interval: int) -> int:
-    """Pick a STATE_WSTRIDE that divides n_step so the final MD step is checkpointed.
+    @abstractmethod
+    def get_indices(self) -> Dict[str, int]:
+        """Return descriptive atom names mapped to atom indices."""
 
-    ASE/Enerzyme do not emit PLUMED CPT events; without STATE_WSTRIDE, STATE_WFILE
-    is never written and OPES restart cannot work.
-    """
-    if n_step is None or n_step <= 0:
-        return 500
-    for candidate in (1000, 500, 200, 100, dump_interval, n_step):
-        if 0 < candidate <= n_step and n_step % candidate == 0:
-            return candidate
-    return n_step
+    @abstractmethod
+    def define_main_rc(self) -> Tuple[str, str]:
+        """Return the main CV name and its PLUMED definition lines."""
+
+    @abstractmethod
+    def calc_main_rc(self) -> float:
+        """Calculate the current main CV value from ``self.system``."""
+
+    def build_reaction_coordinate(
+        self,
+        *,
+        lower_bound: float,
+        upper_bound: float,
+        dump_interval: int,
+        kappa: Optional[float] = None,
+        print_args: Optional[str] = None,
+        **kwargs,
+    ) -> ReactionCoordinate:
+        cv_name, definition = self.define_main_rc()
+        lines = list(self.preamble)
+        lines.extend(line for line in definition.splitlines() if line.strip())
+        return ReactionCoordinate(
+            preamble=lines,
+            cv_name=cv_name,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            initial_value=self.calc_main_rc(),
+            dump_interval=dump_interval,
+            kappa=1000 * kcal / mol if kappa is None else kappa,
+            print_args=print_args if print_args is not None else self.default_print_args,
+        )
+
+    def _append_optional_proton_transfer(
+        self,
+        plumed_config: List[str],
+        *,
+        dump_interval: int,
+        integrate_config: Optional[dict] = None,
+        proton_transfer: Optional[Union[bool, dict, ProtonTransferConfig]] = None,
+        proton_transfer_plugin: Optional[str] = None,
+        **kwargs,
+    ) -> List[str]:
+        return append_optional_proton_transfer(
+            self,
+            plumed_config,
+            dump_interval=dump_interval,
+            integrate_config=integrate_config,
+            proton_transfer=proton_transfer,
+            proton_transfer_plugin=proton_transfer_plugin,
+        )
+
+    def standard_steered_md(
+        self,
+        *,
+        integrate_config: Optional[dict] = None,
+        lower_bound: float,
+        upper_bound: float,
+        dump_interval: int,
+        **kwargs,
+    ) -> List[str]:
+        rc = self.build_reaction_coordinate(
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            dump_interval=dump_interval,
+            **kwargs,
+        )
+        plumed_config = generate_steered_md(rc, integrate_config or self.integrate_config)
+        return self._append_optional_proton_transfer(
+            plumed_config,
+            dump_interval=dump_interval,
+            integrate_config=integrate_config,
+            **kwargs,
+        )
+
+    def naive_steered_md(
+        self,
+        *,
+        integrate_config: Optional[dict] = None,
+        lower_bound: float,
+        upper_bound: float,
+        dump_interval: int,
+        warmup_steps: int,
+        **kwargs,
+    ) -> List[str]:
+        rc = self.build_reaction_coordinate(
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            dump_interval=dump_interval,
+            **kwargs,
+        )
+        n_step = (integrate_config or self.integrate_config).get("n_step")
+        if n_step is None:
+            raise ValueError("integrate_config.n_step is required for naive steered MD")
+        lower_dist = abs(rc.initial_value - lower_bound)
+        upper_dist = abs(rc.initial_value - upper_bound)
+        first, second = (
+            (lower_bound, upper_bound) if lower_dist <= upper_dist else (upper_bound, lower_bound)
+        )
+        plumed_config = list(rc.preamble)
+        plumed_config.append(
+            f"mr: MOVINGRESTRAINT ARG={rc.cv_name} STEP0=0 AT0={rc.initial_value} "
+            f"KAPPA0={rc.kappa} STEP1={warmup_steps} AT1={first} STEP2={n_step} AT2={second}"
+        )
+        print_args = rc.print_args if rc.print_args is not None else f"{rc.cv_name},mr.*"
+        plumed_config.append(f"PRINT ARG={print_args} STRIDE={dump_interval}")
+        plumed_config.append(f"FLUSH STRIDE={dump_interval}")
+        return self._append_optional_proton_transfer(
+            plumed_config,
+            dump_interval=dump_interval,
+            integrate_config=integrate_config,
+            **kwargs,
+        )
+
+    def scan(
+        self,
+        *,
+        target_value: float,
+        lower_bound: float,
+        upper_bound: float,
+        dump_interval: int,
+        **kwargs,
+    ) -> List[str]:
+        rc = self.build_reaction_coordinate(
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            dump_interval=dump_interval,
+            **kwargs,
+        )
+        return generate_scan_restraint(rc, target_value)
 
 
-@dataclass
-class ProtonTransferBias:
-    pace: int = 20
-    barrier_kj_mol: float = 1.0
-    biasfactor: float = 15.0
-    state_wfile: str = "opes_state.data"
-    state_wstride: int = 500
-    state_rfile: Optional[str] = None
-    pt_restart: bool = False
-    min_beta: float = 50.0
-
-
-def _plumed_atom_list(indices: List[int], idx_start_from: int) -> str:
-    return ",".join(str(i + 1 - idx_start_from) for i in indices)
-
-
-def generate_proton_transfer_cv_lines(
-    scope: ProtonTransferScope,
-    idx_start_from: int,
-    min_beta: float = 50.0,
-) -> tuple[List[str], str]:
-    if not scope.transfer_protons:
-        raise ValueError("Proton transfer scope has no transfer protons")
-    if not scope.acceptors:
-        raise ValueError("Proton transfer scope has no acceptors")
-
-    donor_pl = scope.index_donor + 1 - idx_start_from
-    protons_pl = _plumed_atom_list(scope.transfer_protons, idx_start_from)
-    acceptors_pl = _plumed_atom_list(scope.acceptors, idx_start_from)
-    beta = min_beta
-    lines = [
-        (
-            f"pt_d_donor: DISTANCES GROUPA={donor_pl} GROUPB={protons_pl} "
-            f"NOPBC MIN={{BETA={beta}}}"
-        ),
-        (
-            f"pt_d_acc: DISTANCES GROUPA={acceptors_pl} GROUPB={protons_pl} "
-            f"NOPBC MIN={{BETA={beta}}}"
-        ),
-        "pt_cv: COMBINE ARG=pt_d_acc.min,pt_d_donor.min COEFFICIENTS=1,-1 PERIODIC=NO",
-    ]
-    return lines, "pt_cv"
-
-
-def generate_opes_explore(
-    cv_name: str = "pt_cv",
-    pace: int = 20,
-    barrier_kj_mol: float = 1.0,
-    biasfactor: float = 15.0,
-    state_wfile: str = "opes_state.data",
-    state_wstride: int = 500,
-    state_rfile: Optional[str] = None,
-) -> tuple[List[str], str]:
-    barrier = barrier_kj_mol * kJ / mol
-    line = (
-        f"opes: OPES_METAD_EXPLORE ARG={cv_name} PACE={pace} BARRIER={barrier} "
-        f"BIASFACTOR={biasfactor} COMPRESSION_THRESHOLD=0.5 "
-        f"STATE_WFILE={state_wfile} STATE_WSTRIDE={state_wstride}"
-    )
-    if state_rfile is not None:
-        line += f" STATE_RFILE={state_rfile}"
-    return [line], "opes.*"
-
-
-def append_proton_transfer_to_plumed(
-    plumed_config: List[str],
-    scope: ProtonTransferScope,
-    idx_start_from: int,
-    dump_interval: int,
-    bias: Optional[ProtonTransferBias] = None,
-) -> List[str]:
-    if bias is None:
-        bias = ProtonTransferBias()
-
-    config = list(plumed_config)
-    if bias.pt_restart:
-        if not config or config[0] != "RESTART":
-            config.insert(0, "RESTART")
-
-    cv_lines, cv_name = generate_proton_transfer_cv_lines(
-        scope, idx_start_from, min_beta=bias.min_beta
-    )
-    state_rfile = bias.state_wfile if bias.pt_restart else None
-    opes_lines, opes_print = generate_opes_explore(
-        cv_name=cv_name,
-        pace=bias.pace,
-        barrier_kj_mol=bias.barrier_kj_mol,
-        biasfactor=bias.biasfactor,
-        state_wfile=bias.state_wfile,
-        state_wstride=bias.state_wstride,
-        state_rfile=state_rfile,
-    )
-
-    print_idx = next(i for i, line in enumerate(config) if line.startswith("PRINT ARG="))
-    for offset, line in enumerate(cv_lines + opes_lines):
-        config.insert(print_idx + offset, line)
-
-    print_idx = next(i for i, line in enumerate(config) if line.startswith("PRINT ARG="))
-    print_line = config[print_idx]
-    arg_part, stride_part = print_line.split(" STRIDE=", 1)
-    old_args = arg_part.split("PRINT ARG=", 1)[1]
-    config[print_idx] = (
-        f"PRINT ARG={old_args},{cv_name},{opes_print} STRIDE={stride_part}"
-    )
-    return config
 
 
 def generate_steered_md(rc: ReactionCoordinate, integrate_config: dict) -> List[str]:
