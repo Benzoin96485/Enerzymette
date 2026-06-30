@@ -5,7 +5,7 @@
 </p>
 </h1>
 
-[![DOI](https://zenodo.org/badge/1009225606.svg)](https://doi.org/10.5281/zenodo.21018916)
+<a href="https://doi.org/10.5281/zenodo.21018916"><img src="https://zenodo.org/badge/1009225606.svg" alt="DOI"></a>
 
 A collection of small scripts that are useful for [Enerzyme](https://github.com/Benzoin96485/Enerzyme). Install it in the cloned git repo by
 `pip install -e .` See detailed documentation of its integration with Enerzyme at [Readthedocs](https://enerzyme.readthedocs.io/en/latest/index.html).
