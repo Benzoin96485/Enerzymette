@@ -1,18 +1,17 @@
-import subprocess, sys, traceback, os, shutil
+import os
 from typing import Optional, List
-import yaml, json
-from glob import glob
-import ase
-import ase.io
-from ase.units import kcal, mol
+
 from ..logger import logger
-from ..mep_util import analyze_scan_path, find_new_name
-from ..plumed_config_generator import (
-    get_config_generator_name,
-    get_plumed_patch,
-    get_scan_method_name,
-    resolve_scan_endpoints,
+from ..plumed_config_generator import get_plumed_patch
+from .workflow import (
+    build_enerzyme_simulate_cmd,
+    copy_reaction_local_minima,
+    find_lowest_local_minima,
+    run_elementary_reaction_scan,
+    run_scan_chain,
+    write_standalone_scan_config,
 )
+
 
 class EnerzymeScanLauncher:
     def __init__(self,
@@ -69,149 +68,32 @@ class EnerzymeScanLauncher:
                 return {"main": {}, "constraint_freeze": {}, "constraint_scan": {}}
             return parse_scan_config(reference_path, self.output_path)
         raise NotImplementedError(f"Reference type {reference_type} is not supported")
-    
+
     def copy_local_minima(self, reactant_name: str, product_name: str):
-        '''
-        Copy the reactant and product of a scanned reaction with given reactant and product names to the local minima directory.
-        '''
-        elementary_reaction_path = os.path.join(self.output_path, f"{reactant_name}-{product_name}")
-        reactant_path = os.path.join(elementary_reaction_path, f"reactant.xyz")
-        product_path = os.path.join(elementary_reaction_path, f"product.xyz")
-        if os.path.exists(reactant_path):
-            shutil.copy(reactant_path, os.path.join(self.local_minima_path, "reactant", f"{reactant_name}.xyz"))
-        else:
-            logger.warning(f"Reactant file does not exist for finished reaction {reactant_name}-{product_name}")
-        if os.path.exists(product_path):
-            shutil.copy(product_path, os.path.join(self.local_minima_path, "product", f"{product_name}.xyz"))
-        else:
-            logger.warning(f"Product file does not exist for finished reaction {reactant_name}-{product_name}")
+        elementary_reaction_path = os.path.join(
+            self.output_path, f"{reactant_name}-{product_name}"
+        )
+        copy_reaction_local_minima(
+            self.local_minima_path,
+            reactant_name,
+            product_name,
+            elementary_reaction_path,
+        )
 
     def find_lowest_local_minima(self):
-        '''
-        Find the reactant and the product with the lowest energy from all reactant and product local minima of the entire reaction path.
-        '''
-        reactant_paths = glob(os.path.join(self.local_minima_path, "reactant", "*.xyz"))
-        product_paths = glob(os.path.join(self.local_minima_path, "product", "*.xyz"))
-        reactant_energies = [ase.io.read(reactant_path, format="extxyz", index=-1).get_potential_energy() for reactant_path in reactant_paths]
-        product_energies = [ase.io.read(product_path, format="extxyz", index=-1).get_potential_energy() for product_path in product_paths]
-        lowest_reactant_energy = min(reactant_energies)
-        lowest_product_energy = min(product_energies)
-        lowest_reactant_name = os.path.basename(reactant_paths[reactant_energies.index(lowest_reactant_energy)]).split(".")[0]
-        lowest_product_name = os.path.basename(product_paths[product_energies.index(lowest_product_energy)]).split(".")[0]
-        return lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy
+        return find_lowest_local_minima(self.local_minima_path)
 
     def launch(self):
-        os.makedirs(self.local_minima_path, exist_ok=True)
-        os.makedirs(os.path.join(self.local_minima_path, "reactant"), exist_ok=True)
-        os.makedirs(os.path.join(self.local_minima_path, "product"), exist_ok=True)
-
-        reactant_names = [self.reactant_name]
-        product_names = [self.product_name]
-        current_reactant_name = self.reactant_name
-        current_product_name = self.product_name
-        current_reactant_path = self.reactant_path
-        last_product_path = None
-
-        csv_path = os.path.join(self.output_path, "scan.csv")
-        csv_fp = open(csv_path, "w")
-        csv_fp.write("reactant,product\n")
-        csv_fp.flush()
-
-        try:
-            while True:
-                reaction_name = f"{current_reactant_name}-{current_product_name}"
-                elementary_reaction_path = os.path.join(self.output_path, reaction_name)
-                csv_fp.write(f"{current_reactant_name},{current_product_name}\n")
-                csv_fp.flush()
-
-                elementary_reaction_info = self.launch_elementary_reaction(current_reactant_path, elementary_reaction_path, target_structure_path=last_product_path)
-                self.copy_local_minima(current_reactant_name, current_product_name)
-                last_product_path = os.path.join(elementary_reaction_path, "product.xyz")
-                
-                intermediate_indices = elementary_reaction_info["intermediate_indices"]
-                mep_path_info = elementary_reaction_info["mep_path_info"]
-                ci_index = elementary_reaction_info["ci_index"]
-
-                if elementary_reaction_info["terminate_chain"]:
-                    logger.info(
-                        f"CI at scan start (index 0) for {reaction_name} "
-                        "(scan energy decreases along the path); no further scan needed"
-                    )
-                    lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
-                    ts_energy = mep_path_info["energies"][ci_index]
-                    energy_span = (ts_energy - lowest_reactant_energy) / (kcal / mol)
-                    energy_change = (lowest_product_energy - lowest_reactant_energy) / (kcal / mol)
-                    logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol")
-                    logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol")
-                    results = {
-                        "energy span": energy_span,
-                        "energy change": energy_change,
-                        "lowest energy reactant": lowest_reactant_name,
-                        "lowest energy product": lowest_product_name,
-                    }
-                    ts_dir = os.path.join(self.output_path, "rate_determining_ts")
-                    os.makedirs(ts_dir, exist_ok=True)
-                    with open(os.path.join(ts_dir, "results.json"), "w") as f:
-                        json.dump(results, f, indent=4)
-                    ase.io.write(
-                        os.path.join(ts_dir, f"{reaction_name}.xyz"),
-                        mep_path_info["atoms"][ci_index],
-                        format="extxyz",
-                    )
-                    break
-
-                chain_reactant_index = elementary_reaction_info["chain_reactant_index"]
-                if chain_reactant_index is not None:
-                    logger.info(f"Intermediate indices in the chain: {intermediate_indices}")
-                    current_reactant_path = os.path.join(
-                        elementary_reaction_path, f"{reaction_name}-{chain_reactant_index}.xyz"
-                    )
-                    ase.io.write(
-                        current_reactant_path,
-                        mep_path_info["atoms"][chain_reactant_index],
-                        format="extxyz",
-                    )
-                    current_reactant_name = find_new_name(reactant_names)
-                    logger.info(
-                        f"New reactant {current_reactant_name} from interior minimum "
-                        f"image {chain_reactant_index} of reaction {reaction_name} (CI at {ci_index})"
-                    )
-                    current_product_name = find_new_name(product_names)
-                    reactant_names.append(current_reactant_name)
-                    product_names.append(current_product_name)
-                elif intermediate_indices:
-                    logger.info(
-                        f"No interior minimum left of CI at {ci_index}; "
-                        f"stopping after {reaction_name}"
-                    )
-                    break
-                else:
-                    logger.info(f"Scan converged for reaction {reaction_name}")
-                    lowest_reactant_name, lowest_product_name, lowest_reactant_energy, lowest_product_energy = self.find_lowest_local_minima()
-                    ts_energy = mep_path_info["energies"][ci_index]
-                    energy_span = (ts_energy - lowest_reactant_energy) / (kcal / mol)
-                    energy_change = (lowest_product_energy - lowest_reactant_energy) / (kcal / mol)
-                    logger.info(f"Reaction energy span: {energy_span:.2f} kcal/mol between reactant {lowest_reactant_name} and transition state of reaction {reaction_name}")
-                    logger.info(f"Reaction energy change: {energy_change:.2f} kcal/mol between reactant {lowest_reactant_name} and product {lowest_product_name}")
-                    results = {
-                        "energy span": energy_span,
-                        "energy change": energy_change,
-                        "lowest energy reactant": lowest_reactant_name,
-                        "lowest energy product": lowest_product_name
-                    }
-                    ts_dir = os.path.join(self.output_path, "rate_determining_ts")
-                    os.makedirs(ts_dir, exist_ok=True)
-                    with open(os.path.join(ts_dir, "results.json"), "w") as f:
-                        json.dump(results, f, indent=4)
-                    ase.io.write(os.path.join(ts_dir, f"{reaction_name}.xyz"), mep_path_info["atoms"][ci_index], format="extxyz")
-                    break
-        
-        except Exception as e:
-            csv_fp.close()
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            traceback_strs = traceback.format_exception(exc_type, exc_value, exc_traceback)
-            logger.error(f"Error: {exc_type.__name__}: {exc_value}")
-            logger.error(f"Error traceback: {"".join(traceback_strs)}")
+        run_scan_chain(
+            self.output_path,
+            self.reactant_path,
+            run_elementary_reaction=self.launch_elementary_reaction,
+            local_minima_path=self.local_minima_path,
+            reactant_name=self.reactant_name,
+            product_name=self.product_name,
+            write_results=True,
+            handle_errors=True,
+        )
 
     def launch_elementary_reaction(self,
         reactant_path: str,
@@ -219,90 +101,35 @@ class EnerzymeScanLauncher:
         target_value: Optional[float]=None,
         target_structure_path: Optional[str]=None,
     ):
-        if os.path.exists(elementary_reaction_path):
-            logger.warning(f"Output path {elementary_reaction_path} already exists, it could be overwritten")
-        else:
-            os.makedirs(elementary_reaction_path)
-
-        logger.info(f"Reading reactant from {reactant_path}")
-        reactant_atoms = ase.io.read(reactant_path, index=-1)
-        init_reactant_path = os.path.join(elementary_reaction_path, "init_reactant.xyz")
-        ase.io.write(init_reactant_path, reactant_atoms, format="extxyz")
-        logger.info(f"Initial reactant written to {init_reactant_path}")
-
-        # optimize reactant
-        reactant_opt_config_path = os.path.join(elementary_reaction_path, "reactant_opt.yaml")
-        self.write_config(
-            task="opt",
-            initial_structure_path=init_reactant_path,
-            config_path=reactant_opt_config_path
-        )
-        if self.model_config_path is not None:
-            model_config_arg = ["-mc", self.model_config_path]
-        else:
-            model_config_arg = []
-        opt_subprocess = subprocess.Popen(
-            self._enerzyme_simulate_cmd(reactant_opt_config_path, elementary_reaction_path, model_config_arg)
-        )
-        opt_subprocess.wait()
-        opt_path = os.path.join(elementary_reaction_path, "optim.xyz")
-        reactant_path = os.path.join(elementary_reaction_path, "reactant.xyz")
-        os.rename(opt_path, reactant_path)
-        logger.info(f"Reactant optimized and written to {reactant_path}")
-        
-        # flexible scan
-        scan_config_path = os.path.join(elementary_reaction_path, "scan.yaml")
         scan_task = "plumed_scan" if self.plumed_patch_key is not None else "scan"
-        self.write_config(
-            task=scan_task,
-            initial_structure_path=reactant_path,
-            config_path=scan_config_path,
-            target_value=target_value,
-            target_structure_path=target_structure_path
-        )
-        scan_subprocess = subprocess.Popen(
-            self._enerzyme_simulate_cmd(
-                scan_config_path, elementary_reaction_path, model_config_arg,
-                with_plumed_patch=(self.plumed_patch_key is not None),
+        model_config_arg = ["-mc", self.model_config_path] if self.model_config_path is not None else []
+
+        def write_config(task, initial_structure_path, config_path, **kwargs):
+            self.write_config(
+                task=task,
+                initial_structure_path=initial_structure_path,
+                config_path=config_path,
+                target_value=kwargs.get("target_value"),
+                target_structure_path=kwargs.get("target_structure_path"),
             )
-        )
-        scan_subprocess.wait()
-        logger.info(f"Scan finished for elementary reaction {elementary_reaction_path}")
-        scan_atoms = ase.io.read(os.path.join(elementary_reaction_path, "scan_optim.xyz"), format="extxyz", index=":")
-        mep_path_info = {
-            "atoms": scan_atoms,
-            "energies": [atoms.get_potential_energy() for atoms in scan_atoms],
-            "n_images": len(scan_atoms),
-            "n_atoms": len(scan_atoms[0])
-        }
 
-        path = analyze_scan_path(mep_path_info["energies"])
+        def build_simulate_cmd(config_path, output_path, with_plumed_patch):
+            return self._enerzyme_simulate_cmd(
+                config_path,
+                output_path,
+                model_config_arg,
+                with_plumed_patch=with_plumed_patch,
+            )
 
-        # optimize product
-        scan_product_path = os.path.join(elementary_reaction_path, "init_product.xyz")
-        ase.io.write(scan_product_path, scan_atoms[path.product_index], format="extxyz")
-        logger.info(f"Scanned product (image {path.product_index}) written to {scan_product_path}")
-        product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
-        self.write_config(
-            task="opt",
-            initial_structure_path=scan_product_path,
-            config_path=product_opt_config_path
+        return run_elementary_reaction_scan(
+            reactant_path,
+            elementary_reaction_path,
+            write_config=write_config,
+            build_simulate_cmd=build_simulate_cmd,
+            scan_task=scan_task,
+            target_value=target_value,
+            target_structure_path=target_structure_path,
         )
-        product_subprocess = subprocess.Popen(
-            self._enerzyme_simulate_cmd(product_opt_config_path, elementary_reaction_path, model_config_arg),
-        )
-        product_subprocess.wait()
-        product_path = os.path.join(elementary_reaction_path, "product.xyz")
-        os.rename(opt_path, product_path)
-        logger.info(f"Product optimized and written to {product_path}")
-
-        return {
-            "intermediate_indices": path.intermediate_indices,
-            "mep_path_info": mep_path_info,
-            "ci_index": path.ci_index,
-            "terminate_chain": path.terminate_chain,
-            "chain_reactant_index": path.chain_reactant_index,
-        }
 
     def _enerzyme_simulate_cmd(
         self,
@@ -311,17 +138,15 @@ class EnerzymeScanLauncher:
         model_config_arg: List[str],
         with_plumed_patch: bool = False,
     ) -> List[str]:
-        cmd = [
-            "enerzyme", "simulate",
-            "-c", config_path,
-            "-o", output_path,
-            "-m", self.model_path,
-        ] + model_config_arg
-        if with_plumed_patch and self.plumed_patch is not None:
-            cmd.extend(["-pp", self.plumed_patch])
-        return cmd
+        return build_enerzyme_simulate_cmd(
+            config_path,
+            output_path,
+            self.model_path,
+            plumed_patch=self.plumed_patch if with_plumed_patch else None,
+            model_config_arg=model_config_arg,
+        )
 
-    def write_config(self, 
+    def write_config(self,
         task: str,
         initial_structure_path: str,
         config_path: str,
@@ -329,92 +154,18 @@ class EnerzymeScanLauncher:
         target_structure_path: Optional[str]=None,
     ):
         idx_start_from = 0 if self.reference_type == "scan_config" else 1
-        base_config = {
-            "Simulation": {
-                "environment": "ase",
-                "dtype": "float64",
-                "cuda": True,
-                "task": task,
-                "idx_start_from": idx_start_from,
-                "neighbor_list": "full",
-                "constraint": {
-                    "fix_atom": {
-                        "indices": self.constraint_freeze_xyz
-                    }
-                },
-                "optimize": {
-                    "optimizer": "LBFGS"
-                }
-            },
-            "System": {
-                "structure_file": initial_structure_path,
-                "charge": self.charge,
-                "multiplicity": self.multiplicity,
-            }
-        }
-        if task == "plumed_scan":
-            if self.plumed_patch_key is None:
-                raise ValueError("plumed_scan task requires plumed_patch_key")
-            initial_structure = ase.io.read(initial_structure_path, index=-1)
-            x0, x1, num, rc = resolve_scan_endpoints(
-                initial_structure,
-                idx_start_from,
-                self.plumed_patch_key,
-                self.plumed_cv_config,
-                self.n_steps,
-                target_value=target_value,
-                target_structure_path=target_structure_path,
-            )
-            base_config["Simulation"]["plumed_config_generator"] = {
-                "name": get_config_generator_name(self.plumed_patch_key),
-                "method": get_scan_method_name(self.plumed_patch_key),
-            }
-            base_config["Simulation"]["sampling"] = {
-                "cv": "plumed",
-                "params": {
-                    "x0": float(x0),
-                    "x1": float(x1),
-                    "num": num,
-                    "plumed_config": dict(self.plumed_cv_config),
-                },
-            }
-            logger.info(
-                f"PLUMED scan on CV {rc.cv_name} from {x0} to {x1} "
-                f"(bounds [{rc.lower_bound}, {rc.upper_bound}]) with {num} steps"
-            )
-        elif task == "scan":
-            for constraint_type in self.constraint_scan.keys():
-                constraint_params = self.constraint_scan[constraint_type]
-                if constraint_type == "bond":
-                    index0 = constraint_params["i0"]
-                    index1 = constraint_params["i1"]
-                    ase_i0 = index0 - idx_start_from
-                    ase_i1 = index1 - idx_start_from
-                    initial_structure = ase.io.read(initial_structure_path, index=-1)
-                    initial_value = initial_structure.get_distance(ase_i0, ase_i1)
-                    if target_value is None:
-                        if target_structure_path is None:
-                            from mendeleev import element
-                            element0 = element(initial_structure.symbols[ase_i0])
-                            element1 = element(initial_structure.symbols[ase_i1])
-                            target_value = (element0.covalent_radius_pyykko + element1.covalent_radius_pyykko) / 100 # (pm to Angstrom)
-                            logger.info(f"Target value is set to {target_value} Angstrom based on single-bond Pyykko covalent radii for bond between atoms {index0} and {index1}")
-                        else:
-                            target_structure = ase.io.read(target_structure_path, index=-1)
-                            target_value = target_structure.get_distance(ase_i0, ase_i1)
-                            logger.info(f"Target value is set to {target_value} Angstrom based on distance between atoms {index0} and {index1} in reference target structure {target_structure_path}")
-                    base_config["Simulation"]["sampling"] = {
-                        "cv": "distance",
-                        "params": {
-                            "x0": float(initial_value),
-                            "x1": float(target_value),
-                            "num": self.n_steps,
-                            "i0": index0,
-                            "i1": index1
-                        }
-                    }
-                    logger.info(f"Scanning distance between atoms {index0} and {index1} from {initial_value} to {target_value} with {self.n_steps} steps")
-
-        with open(config_path, "w") as f:
-            yaml.dump(base_config, f)
-        logger.info(f"Config (task: {task}) written to {config_path}")
+        write_standalone_scan_config(
+            config_path,
+            task=task,
+            initial_structure_path=initial_structure_path,
+            charge=self.charge,
+            multiplicity=self.multiplicity,
+            constraint_freeze_xyz=self.constraint_freeze_xyz,
+            idx_start_from=idx_start_from,
+            constraint_scan=self.constraint_scan,
+            plumed_patch_key=self.plumed_patch_key,
+            plumed_cv_config=self.plumed_cv_config,
+            n_steps=self.n_steps,
+            target_value=target_value,
+            target_structure_path=target_structure_path,
+        )

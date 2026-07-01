@@ -4,14 +4,15 @@ from typing import Tuple, Optional, Dict, Callable, Literal, List
 import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
-from ..plumed_config_generator import (
-    get_config_generator_name,
-    get_plumed_patch,
-    get_scan_method_name,
-    resolve_scan_endpoints,
+from ..plumed_config_generator import get_plumed_patch
+from ..scantoolkit.workflow import (
+    build_enerzyme_simulate_cmd,
+    run_elementary_reaction_scan,
+    run_scan_chain,
+    write_base_scan_task_config,
 )
-from ..mep_util import analyze_scan_path, find_new_name
 from ..logger import logger
+from .get_index import get_indices
 from .structures_manifest import SystemManifestEntry, load_systems_manifest
 
 
@@ -41,31 +42,6 @@ def collect_trajectory(simulation_trajectory_path: str, collection_path: str) ->
     with open(collection_path, "wb") as f:
         pickle.dump(datapoints, f)
 
-
-resname_list = {
-    "CYS": "C",
-    "ASP": "D",
-    "SER": "S",
-    "GLN": "Q",
-    "LYS": "K",
-    "ILE": "I",
-    "PRO": "P",
-    "THR": "T",
-    "PHE": "F",
-    "ASN": "N",
-    "GLY": "G",
-    "HIS": "H",
-    "LEU": "L",
-    "ARG": "R",
-    "TRP": "W",
-    "ALA": "A",
-    "VAL": "V",
-    "GLU": "E",
-    "TYR": "Y",
-    "MET": "M",
-    "MSE": "M",
-    "HID": "H"
-}.keys()
 
 class active_learning_launcher:
     def __init__(self,
@@ -234,23 +210,10 @@ class active_learning_launcher:
                 MolToXYZFile(cluster_mol, self.output_xyz_path)
                 self.initial_xyz_path = self.output_xyz_path
 
-            self.backbone_indices = []
-            self.Calpha_indices = []
-            atom_count = 0
-            with open(self.reference_pdb_path, "r") as f:
-                for line in f.readlines():
-                    if line.startswith("ATOM") or line.startswith("HETATM"):
-                        atom_count += 1
-                        resname = line[17:20]
-                        atomname = line[11:16].strip()
-                        if resname in resname_list:
-                            if atomname in ["N", "C", "CA", "O"]:
-                                self.backbone_indices.append(atom_count - 1)
-                                if atomname == "CA":
-                                    self.Calpha_indices.append(atom_count - 1)
-                        elif resname == "HOH":
-                            if atomname == "O":
-                                self.Calpha_indices.append(atom_count - 1)
+            self.backbone_indices = get_indices(self.reference_pdb_path, 0, ["backbone"])
+            self.Calpha_indices = get_indices(
+                self.reference_pdb_path, 0, ["C_alpha", "O_water"]
+            )
             with open(self.simulation_config_path, "r") as f:
                 simulation_config = yaml.load(f, Loader=yaml.FullLoader)
                 simulation_config["System"]["structure_file"] = self.initial_xyz_path
@@ -562,65 +525,6 @@ class active_learning_launcher:
                 f"to {state_pool_file}"
             )
 
-    def _write_task_config(
-        self,
-        task: str,
-        structure_path: str,
-        config_path: str,
-        base_config: Dict,
-        scan_target_value: Optional[float] = None,
-        scan_target_structure_path: Optional[str] = None,
-    ) -> None:
-        config = copy.deepcopy(base_config)
-        config["System"]["structure_file"] = structure_path
-        config["Simulation"]["task"] = task
-        config["Simulation"].pop("uncertainty_calculator", None)
-
-        if task == "opt":
-            config["Simulation"].pop("sampling", None)
-            config["Simulation"].pop("integrate", None)
-            if "optimize" not in config["Simulation"]:
-                config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
-        elif task == "md":
-            config["Simulation"].pop("sampling", None)
-            config["Simulation"]["integrate"]["n_step"] = self.n_presimulation_steps_per_iteration
-        elif task == "plumed_scan":
-            config["Simulation"].pop("integrate", None)
-            if "optimize" not in config["Simulation"]:
-                config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
-            idx_start_from = config["Simulation"]["idx_start_from"]
-            plumed_cv_config = config["Simulation"]["sampling"]["params"]["plumed_config"]
-            initial_structure = ase.io.read(structure_path, index=-1)
-            x0, x1, num, rc = resolve_scan_endpoints(
-                initial_structure,
-                idx_start_from,
-                self.plumed_patch_key,
-                plumed_cv_config,
-                self.n_initial_scan_steps,
-                target_value=scan_target_value,
-                target_structure_path=scan_target_structure_path,
-            )
-            config["Simulation"]["plumed_config_generator"] = {
-                "name": get_config_generator_name(self.plumed_patch_key),
-                "method": get_scan_method_name(self.plumed_patch_key),
-            }
-            config["Simulation"]["sampling"] = {
-                "cv": "plumed",
-                "params": {
-                    "x0": float(x0),
-                    "x1": float(x1),
-                    "num": num,
-                    "plumed_config": dict(plumed_cv_config),
-                },
-            }
-            logger.info(
-                f"PLUMED scan on CV {rc.cv_name} from {x0} to {x1} "
-                f"(bounds [{rc.lower_bound}, {rc.upper_bound}]) with {num} steps"
-            )
-
-        with open(config_path, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
-
     def _enerzyme_simulate_cmd(
         self,
         config_path: str,
@@ -628,110 +532,14 @@ class active_learning_launcher:
         model_config_path: str,
         with_plumed_patch: bool = False,
     ) -> List[str]:
-        cmd = [
-            "enerzyme", "simulate",
-            "-c", config_path,
-            "-o", output_path,
-            "-m", self.output_path,
-            "-cp", self.calculator_patch,
-            "-mc", model_config_path,
-        ]
-        if with_plumed_patch:
-            cmd.extend(["-pp", self.plumed_patch])
-        return cmd
-
-    def _copy_initial_scan_local_minima(
-        self,
-        local_minima_path: str,
-        reactant_name: str,
-        product_name: str,
-        elementary_reaction_path: str,
-    ) -> None:
-        reactant_src = os.path.join(elementary_reaction_path, "reactant.xyz")
-        product_src = os.path.join(elementary_reaction_path, "product.xyz")
-        if os.path.exists(reactant_src):
-            shutil.copy(
-                reactant_src,
-                os.path.join(local_minima_path, "reactant", f"{reactant_name}.xyz"),
-            )
-        if os.path.exists(product_src):
-            shutil.copy(
-                product_src,
-                os.path.join(local_minima_path, "product", f"{product_name}.xyz"),
-            )
-
-    def _launch_elementary_reaction_scan(
-        self,
-        reactant_path: str,
-        elementary_reaction_path: str,
-        base_config: Dict,
-        model_config_path: str,
-        target_value: Optional[float] = None,
-        target_structure_path: Optional[str] = None,
-    ) -> Dict:
-        if os.path.exists(elementary_reaction_path):
-            logger.warning(
-                f"Output path {elementary_reaction_path} already exists, it could be overwritten"
-            )
-        else:
-            os.makedirs(elementary_reaction_path)
-
-        reactant_atoms = ase.io.read(reactant_path, index=-1)
-        init_reactant_path = os.path.join(elementary_reaction_path, "init_reactant.xyz")
-        ase.io.write(init_reactant_path, reactant_atoms, format="extxyz")
-
-        reactant_opt_config_path = os.path.join(elementary_reaction_path, "reactant_opt.yaml")
-        self._write_task_config("opt", init_reactant_path, reactant_opt_config_path, base_config)
-        subprocess.Popen(
-            self._enerzyme_simulate_cmd(reactant_opt_config_path, elementary_reaction_path, model_config_path),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        ).wait()
-        opt_path = os.path.join(elementary_reaction_path, "optim.xyz")
-        optimized_reactant_path = os.path.join(elementary_reaction_path, "reactant.xyz")
-        os.rename(opt_path, optimized_reactant_path)
-
-        scan_config_path = os.path.join(elementary_reaction_path, "scan.yaml")
-        self._write_task_config(
-            "plumed_scan",
-            optimized_reactant_path,
-            scan_config_path,
-            base_config,
-            scan_target_value=target_value,
-            scan_target_structure_path=target_structure_path,
+        return build_enerzyme_simulate_cmd(
+            config_path,
+            output_path,
+            self.output_path,
+            calculator_patch=self.calculator_patch,
+            plumed_patch=self.plumed_patch if with_plumed_patch else None,
+            model_config_path=model_config_path,
         )
-        subprocess.Popen(
-            self._enerzyme_simulate_cmd(
-                scan_config_path, elementary_reaction_path, model_config_path, with_plumed_patch=True
-            ),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        ).wait()
-
-        scan_atoms = ase.io.read(
-            os.path.join(elementary_reaction_path, "scan_optim.xyz"), format="extxyz", index=":"
-        )
-        energies = [atoms.get_potential_energy() for atoms in scan_atoms]
-        path = analyze_scan_path(energies)
-
-        scan_product_path = os.path.join(elementary_reaction_path, "init_product.xyz")
-        ase.io.write(scan_product_path, scan_atoms[path.product_index], format="extxyz")
-        product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
-        self._write_task_config("opt", scan_product_path, product_opt_config_path, base_config)
-        subprocess.Popen(
-            self._enerzyme_simulate_cmd(product_opt_config_path, elementary_reaction_path, model_config_path),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        ).wait()
-        os.rename(opt_path, os.path.join(elementary_reaction_path, "product.xyz"))
-
-        return {
-            "intermediate_indices": path.intermediate_indices,
-            "mep_path_info": {"atoms": scan_atoms, "energies": energies},
-            "ci_index": path.ci_index,
-            "terminate_chain": path.terminate_chain,
-            "chain_reactant_index": path.chain_reactant_index,
-        }
 
     def _run_initial_scan(self) -> None:
         initial_scan_path = os.path.join(self.output_path, "initial_scan")
@@ -741,9 +549,6 @@ class active_learning_launcher:
             logger.info(f"Initial scan already completed at {initial_scan_path}, skipping.")
             return
 
-        os.makedirs(os.path.join(local_minima_path, "reactant"), exist_ok=True)
-        os.makedirs(os.path.join(local_minima_path, "product"), exist_ok=True)
-
         model_config_path = os.path.join(initial_scan_path, "model_config.yaml")
         if not os.path.exists(model_config_path):
             self._make_model_config(0, model_config_path)
@@ -751,76 +556,47 @@ class active_learning_launcher:
         with open(self.simulation_config_path, "r") as f:
             base_config = yaml.load(f, Loader=yaml.FullLoader)
 
-        reactant_names = ["1a"]
-        product_names = ["2a"]
-        current_reactant_name = reactant_names[0]
-        current_product_name = product_names[0]
-        current_reactant_path = base_config["System"]["structure_file"]
-        last_product_path = None
+        def write_config(task, structure_path, config_path, **kwargs):
+            write_base_scan_task_config(
+                config_path,
+                task=task,
+                structure_path=structure_path,
+                base_config=base_config,
+                plumed_patch_key=self.plumed_patch_key if task == "plumed_scan" else None,
+                n_steps=self.n_initial_scan_steps,
+                scan_target_value=kwargs.get("target_value"),
+                scan_target_structure_path=kwargs.get("target_structure_path"),
+                yaml_flow_style=False,
+            )
 
-        csv_path = os.path.join(initial_scan_path, "scan.csv")
-        with open(csv_path, "w") as csv_fp:
-            csv_fp.write("reactant,product\n")
-            while True:
-                reaction_name = f"{current_reactant_name}-{current_product_name}"
-                elementary_reaction_path = os.path.join(initial_scan_path, reaction_name)
-                csv_fp.write(f"{current_reactant_name},{current_product_name}\n")
-                csv_fp.flush()
+        def build_simulate_cmd(config_path, output_path, with_plumed_patch):
+            return build_enerzyme_simulate_cmd(
+                config_path,
+                output_path,
+                self.output_path,
+                calculator_patch=self.calculator_patch,
+                plumed_patch=self.plumed_patch if with_plumed_patch else None,
+                model_config_path=model_config_path,
+            )
 
-                elementary_reaction_info = self._launch_elementary_reaction_scan(
-                    current_reactant_path,
-                    elementary_reaction_path,
-                    base_config,
-                    model_config_path,
-                    target_structure_path=last_product_path,
-                )
-                self._copy_initial_scan_local_minima(
-                    local_minima_path,
-                    current_reactant_name,
-                    current_product_name,
-                    elementary_reaction_path,
-                )
-                last_product_path = os.path.join(elementary_reaction_path, "product.xyz")
+        def run_elementary(reactant_path, elementary_reaction_path, target_structure_path=None):
+            return run_elementary_reaction_scan(
+                reactant_path,
+                elementary_reaction_path,
+                write_config=write_config,
+                build_simulate_cmd=build_simulate_cmd,
+                scan_task="plumed_scan",
+                target_structure_path=target_structure_path,
+                redirect_stdio=True,
+            )
 
-                intermediate_indices = elementary_reaction_info["intermediate_indices"]
-                mep_path_info = elementary_reaction_info["mep_path_info"]
-                ci_index = elementary_reaction_info["ci_index"]
-
-                if elementary_reaction_info["terminate_chain"]:
-                    logger.info(
-                        f"Initial scan: CI at index 0 for {reaction_name} "
-                        "(scan energy decreases along the path); no further scan needed"
-                    )
-                    break
-
-                chain_reactant_index = elementary_reaction_info["chain_reactant_index"]
-                if chain_reactant_index is not None:
-                    logger.info(
-                        f"Initial scan chain: intermediates {intermediate_indices}, "
-                        f"CI at {ci_index}, next reactant from image {chain_reactant_index}"
-                    )
-                    current_reactant_path = os.path.join(
-                        elementary_reaction_path,
-                        f"{reaction_name}-{chain_reactant_index}.xyz",
-                    )
-                    ase.io.write(
-                        current_reactant_path,
-                        mep_path_info["atoms"][chain_reactant_index],
-                        format="extxyz",
-                    )
-                    current_reactant_name = find_new_name(reactant_names)
-                    reactant_names.append(current_reactant_name)
-                    current_product_name = find_new_name(product_names)
-                    product_names.append(current_product_name)
-                else:
-                    if intermediate_indices:
-                        logger.info(
-                            f"Initial scan: no interior minimum left of CI at {ci_index}; "
-                            f"stopping after {reaction_name}"
-                        )
-                    else:
-                        logger.info(f"Initial scan converged for reaction {reaction_name}")
-                    break
+        run_scan_chain(
+            initial_scan_path,
+            base_config["System"]["structure_file"],
+            run_elementary_reaction=run_elementary,
+            local_minima_path=local_minima_path,
+            log_prefix="Initial scan: ",
+        )
 
         open(completed_flag, "w").close()
         logger.info(f"Initial scan finished at {initial_scan_path}")
