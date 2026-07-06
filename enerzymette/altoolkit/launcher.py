@@ -171,25 +171,101 @@ class active_learning_launcher:
         enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
         enerzyme_subprocess.wait()
 
+    def _update_simulation_config_from_topology(
+        self,
+        simulation_config_path: str,
+        *,
+        initial_xyz_path: str,
+        charge: int,
+        reference_pdb_path: str,
+        backbone_indices: List[int],
+        Calpha_indices: List[int],
+    ) -> None:
+        with open(simulation_config_path, "r") as f:
+            simulation_config = yaml.load(f, Loader=yaml.FullLoader)
+        simulation_config["System"]["structure_file"] = initial_xyz_path
+        simulation_config["System"]["charge"] = charge
+        idx_start_from = simulation_config["Simulation"]["idx_start_from"]
+        if self.restraint_mode == "hard":
+            simulation_config["Simulation"]["constraint"] = {
+                "fix_atom": {
+                    "indices": [idx + idx_start_from for idx in backbone_indices]
+                }
+            }
+        elif self.restraint_mode == "soft":
+            Hookean_k = simulation_config["Simulation"]["constraint"].get(
+                "Hookean_allpairs", {}
+            ).get("k", 0.05)
+            simulation_config["Simulation"]["constraint"] = {
+                "Hookean_allpairs": {
+                    "indices": [idx + idx_start_from for idx in Calpha_indices],
+                    "k": Hookean_k,
+                }
+            }
+        simulation_config["Simulation"]["sampling"]["params"]["plumed_config"][
+            "reference_pdb_file"
+        ] = reference_pdb_path
+        with open(simulation_config_path, "w") as f:
+            yaml.dump(simulation_config, f, default_flow_style=False)
+
     def _get_multi_system_topology(self) -> None:
+        from rdkit.Chem import MolFromMolFile, MolToXYZFile, GetFormalCharge
+
         for system in self.systems_manifest:
             topo_dir = self._topology_dir_for_system(system.name)
             os.makedirs(topo_dir, exist_ok=True)
-            img_path, _, mol_path = self._topology_paths_for_system(system.name)
+            img_path, xyz_path, mol_path = self._topology_paths_for_system(system.name)
             if os.path.exists(mol_path):
                 logger.info(
                     f"Topology for {system.name} already exists at {topo_dir}, skipping bond."
                 )
-                continue
-            self._run_enerzyme_bond(
-                system.reference_pdb,
-                img_path,
-                mol_path,
-                reference_sdf=system.reference_sdf,
+            else:
+                self._run_enerzyme_bond(
+                    system.reference_pdb,
+                    img_path,
+                    mol_path,
+                    reference_sdf=system.reference_sdf,
+                )
+                logger.info(
+                    f"Generated topology for {system.name} under {topo_dir} "
+                    f"(cluster.mol, cluster.png)"
+                )
+
+            cluster_mol = MolFromMolFile(mol_path, removeHs=False)
+            charge = GetFormalCharge(cluster_mol)
+            initial_xyz_path = system.reference_xyz
+            if not system.reference_xyz_explicit:
+                MolToXYZFile(cluster_mol, xyz_path)
+                initial_xyz_path = xyz_path
+                system.reference_xyz = xyz_path
+                system.source_structure = xyz_path
+
+            backbone_indices = get_indices(system.reference_pdb, 0, ["backbone"])
+            Calpha_indices = get_indices(
+                system.reference_pdb, 0, ["C_alpha", "O_water"]
+            )
+            self._update_simulation_config_from_topology(
+                system.simulation_config,
+                initial_xyz_path=initial_xyz_path,
+                charge=charge,
+                reference_pdb_path=system.reference_pdb,
+                backbone_indices=backbone_indices,
+                Calpha_indices=Calpha_indices,
             )
             logger.info(
-                f"Generated topology for {system.name} under {topo_dir} "
-                f"(cluster.mol, cluster.png)"
+                f"Using total charge ({charge}) of the cluster parsed from the "
+                f"reference structure: {system.reference_pdb} with the small molecule "
+                f"template: {system.reference_sdf}"
+            )
+            if not system.reference_xyz_explicit:
+                logger.info(
+                    f"Using initial structure: {initial_xyz_path} converted from the "
+                    f"reference structure: {system.reference_pdb}"
+                )
+            logger.info(
+                f"Using topology information {mol_path} parsed from the reference "
+                f"structure: {system.reference_pdb} and the small molecule template: "
+                f"{system.reference_sdf}"
             )
 
     def _get_topology(self) -> None:

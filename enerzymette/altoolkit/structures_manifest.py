@@ -17,6 +17,7 @@ class SystemManifestEntry:
     reference_sdf: Optional[str] = None
     reference_xyz: Optional[str] = None
     source_structure: Optional[str] = None
+    reference_xyz_explicit: bool = False
 
 
 def _abs_path(path: str, base_dir: Optional[str] = None) -> str:
@@ -91,25 +92,12 @@ def load_systems_manifest(manifest_path: str) -> List[SystemManifestEntry]:
                 )
 
         reference_xyz = system.get("reference_xyz")
-        if reference_xyz:
+        reference_xyz_explicit = reference_xyz is not None
+        if reference_xyz_explicit:
             reference_xyz = _abs_path(reference_xyz, manifest_dir)
             if not os.path.exists(reference_xyz):
                 raise FileNotFoundError(
                     f"reference_xyz not found for {name}: {reference_xyz}"
-                )
-        else:
-            structure_file = sim_yaml.get("System", {}).get("structure_file")
-            if not structure_file:
-                raise ValueError(
-                    f"systems[{idx}] ({name}): provide 'reference_xyz' or set "
-                    "System.structure_file in simulation_config"
-                )
-            reference_xyz = _abs_path(
-                structure_file, os.path.dirname(simulation_config)
-            )
-            if not os.path.exists(reference_xyz):
-                raise FileNotFoundError(
-                    f"structure_file not found for {name}: {reference_xyz}"
                 )
 
         plumed_config = (
@@ -143,6 +131,7 @@ def load_systems_manifest(manifest_path: str) -> List[SystemManifestEntry]:
                 reference_sdf=reference_sdf,
                 reference_xyz=reference_xyz,
                 source_structure=reference_xyz,
+                reference_xyz_explicit=reference_xyz_explicit,
             )
         )
 
