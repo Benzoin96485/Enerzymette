@@ -18,6 +18,9 @@ class SystemManifestEntry:
     reference_xyz: Optional[str] = None
     source_structure: Optional[str] = None
     reference_xyz_explicit: bool = False
+    charge: Optional[int] = None
+    backbone_indices: Optional[List[int]] = None
+    Calpha_indices: Optional[List[int]] = None
 
 
 def _abs_path(path: str, base_dir: Optional[str] = None) -> str:
@@ -106,16 +109,6 @@ def load_systems_manifest(manifest_path: str) -> List[SystemManifestEntry]:
             .get("params", {})
             .get("plumed_config", {})
         )
-        yaml_pdb = plumed_config.get("reference_pdb_file")
-        if yaml_pdb:
-            yaml_pdb_abs = _abs_path(yaml_pdb, os.path.dirname(simulation_config))
-            if os.path.normpath(yaml_pdb_abs) != os.path.normpath(reference_pdb):
-                raise ValueError(
-                    f"systems[{idx}] ({name}): reference_pdb in manifest "
-                    f"({reference_pdb}) does not match "
-                    f"plumed_config.reference_pdb_file ({yaml_pdb_abs}) "
-                    "in simulation_config"
-                )
 
         if plumed_config.get("proton_transfer"):
             raise NotImplementedError(

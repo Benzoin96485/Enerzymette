@@ -171,42 +171,43 @@ class active_learning_launcher:
         enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
         enerzyme_subprocess.wait()
 
-    def _update_simulation_config_from_topology(
+    def _apply_simulation_topology(
         self,
-        simulation_config_path: str,
+        simulation_config: Dict,
         *,
-        initial_xyz_path: str,
-        charge: int,
-        reference_pdb_path: str,
-        backbone_indices: List[int],
-        Calpha_indices: List[int],
-    ) -> None:
-        with open(simulation_config_path, "r") as f:
-            simulation_config = yaml.load(f, Loader=yaml.FullLoader)
-        simulation_config["System"]["structure_file"] = initial_xyz_path
-        simulation_config["System"]["charge"] = charge
-        idx_start_from = simulation_config["Simulation"]["idx_start_from"]
-        if self.restraint_mode == "hard":
-            simulation_config["Simulation"]["constraint"] = {
-                "fix_atom": {
-                    "indices": [idx + idx_start_from for idx in backbone_indices]
+        initial_xyz_path: Optional[str] = None,
+        charge: Optional[int] = None,
+        reference_pdb_path: Optional[str] = None,
+        backbone_indices: Optional[List[int]] = None,
+        Calpha_indices: Optional[List[int]] = None,
+    ) -> Dict:
+        if initial_xyz_path is not None:
+            simulation_config["System"]["structure_file"] = initial_xyz_path
+        if charge is not None:
+            simulation_config["System"]["charge"] = charge
+        if backbone_indices is not None and Calpha_indices is not None:
+            idx_start_from = simulation_config["Simulation"]["idx_start_from"]
+            if self.restraint_mode == "hard":
+                simulation_config["Simulation"]["constraint"] = {
+                    "fix_atom": {
+                        "indices": [idx + idx_start_from for idx in backbone_indices]
+                    }
                 }
-            }
-        elif self.restraint_mode == "soft":
-            Hookean_k = simulation_config["Simulation"]["constraint"].get(
-                "Hookean_allpairs", {}
-            ).get("k", 0.05)
-            simulation_config["Simulation"]["constraint"] = {
-                "Hookean_allpairs": {
-                    "indices": [idx + idx_start_from for idx in Calpha_indices],
-                    "k": Hookean_k,
+            elif self.restraint_mode == "soft":
+                Hookean_k = simulation_config["Simulation"]["constraint"].get(
+                    "Hookean_allpairs", {}
+                ).get("k", 0.05)
+                simulation_config["Simulation"]["constraint"] = {
+                    "Hookean_allpairs": {
+                        "indices": [idx + idx_start_from for idx in Calpha_indices],
+                        "k": Hookean_k,
+                    }
                 }
-            }
-        simulation_config["Simulation"]["sampling"]["params"]["plumed_config"][
-            "reference_pdb_file"
-        ] = reference_pdb_path
-        with open(simulation_config_path, "w") as f:
-            yaml.dump(simulation_config, f, default_flow_style=False)
+        if reference_pdb_path is not None:
+            simulation_config["Simulation"]["sampling"]["params"]["plumed_config"][
+                "reference_pdb_file"
+            ] = reference_pdb_path
+        return simulation_config
 
     def _get_multi_system_topology(self) -> None:
         from rdkit.Chem import MolFromMolFile, MolToXYZFile, GetFormalCharge
@@ -244,14 +245,9 @@ class active_learning_launcher:
             Calpha_indices = get_indices(
                 system.reference_pdb, 0, ["C_alpha", "O_water"]
             )
-            self._update_simulation_config_from_topology(
-                system.simulation_config,
-                initial_xyz_path=initial_xyz_path,
-                charge=charge,
-                reference_pdb_path=system.reference_pdb,
-                backbone_indices=backbone_indices,
-                Calpha_indices=Calpha_indices,
-            )
+            system.charge = charge
+            system.backbone_indices = backbone_indices
+            system.Calpha_indices = Calpha_indices
             logger.info(
                 f"Using total charge ({charge}) of the cluster parsed from the "
                 f"reference structure: {system.reference_pdb} with the small molecule "
@@ -290,36 +286,9 @@ class active_learning_launcher:
             self.Calpha_indices = get_indices(
                 self.reference_pdb_path, 0, ["C_alpha", "O_water"]
             )
-            with open(self.simulation_config_path, "r") as f:
-                simulation_config = yaml.load(f, Loader=yaml.FullLoader)
-                simulation_config["System"]["structure_file"] = self.initial_xyz_path
-                simulation_config["System"]["charge"] = self.charge
-                idx_start_from = simulation_config["Simulation"]["idx_start_from"]
-                if self.restraint_mode == "hard":
-                    simulation_config["Simulation"]["constraint"] = {
-                        "fix_atom": {
-                            "indices": [idx + idx_start_from for idx in self.backbone_indices]
-                        }
-                    }
-                elif self.restraint_mode == "soft":
-                    Hookean_k = simulation_config["Simulation"]["constraint"].get("Hookean_allpairs", {}).get("k", 0.05)
-                    simulation_config["Simulation"]["constraint"] = {
-                        "Hookean_allpairs": {
-                            "indices": [idx + idx_start_from for idx in self.Calpha_indices],
-                            "k": Hookean_k
-                        }
-                    }
-                simulation_config["Simulation"]["sampling"]["params"]["plumed_config"]["reference_pdb_file"] = self.reference_pdb_path
-            with open(self.simulation_config_path, "w") as f:
-                yaml.dump(simulation_config, f, default_flow_style=False)
             logger.info(f"Using total charge ({self.charge}) of the cluster parsed from the reference structure: {self.reference_pdb_path} with the small molecule template: {self.template_sdf_path}")
             logger.info(f"Using initial structure: {self.initial_xyz_path} converted from the reference structure: {self.reference_pdb_path}")
             
-            with open(self.extraction_config_path, "r") as f:
-                extraction_config = yaml.load(f, Loader=yaml.FullLoader)
-                extraction_config["Extractor"]["reference_mol_path"] = self.output_mol_path
-            with open(self.extraction_config_path, "w") as f:
-                yaml.dump(extraction_config, f, default_flow_style=False)
             logger.info(f"Using topology information {self.output_mol_path} parsed from the reference structure: {self.reference_pdb_path} and the small molecule template: {self.template_sdf_path}")
 
 
@@ -529,15 +498,57 @@ class active_learning_launcher:
     def _simulation_config_path_for_pool_entry(self, entry: Dict) -> str:
         return entry.get("simulation_config", self.simulation_config_path)
 
+    def _system_manifest_entry_for_pool_entry(
+        self, entry: Dict
+    ) -> Optional[SystemManifestEntry]:
+        if not self.multi_system_mode or not entry.get("name"):
+            return None
+        return next(
+            (
+                system
+                for system in self.systems_manifest
+                if system.name == entry["name"]
+            ),
+            None,
+        )
+
+    def _apply_topology_for_pool_entry(
+        self, simulation_config: Dict, entry: Dict
+    ) -> Dict:
+        if self.multi_system_mode:
+            system = self._system_manifest_entry_for_pool_entry(entry)
+            if system is not None:
+                return self._apply_simulation_topology(
+                    simulation_config,
+                    initial_xyz_path=system.reference_xyz,
+                    charge=system.charge,
+                    reference_pdb_path=system.reference_pdb,
+                    backbone_indices=system.backbone_indices,
+                    Calpha_indices=system.Calpha_indices,
+                )
+            return simulation_config
+
+        if self.reference_pdb_path is not None:
+            return self._apply_simulation_topology(
+                simulation_config,
+                initial_xyz_path=self.initial_xyz_path,
+                charge=self.charge,
+                reference_pdb_path=self.reference_pdb_path,
+                backbone_indices=self.backbone_indices,
+                Calpha_indices=self.Calpha_indices,
+            )
+        return simulation_config
+
+    def _load_base_simulation_config(self) -> Dict:
+        with open(self.simulation_config_path, "r") as handle:
+            simulation_config = yaml.load(handle, Loader=yaml.FullLoader)
+        return self._apply_topology_for_pool_entry(simulation_config, {})
+
     def _load_simulation_config_for_entry(self, entry: Dict) -> Dict:
         config_path = self._simulation_config_path_for_pool_entry(entry)
         with open(config_path, "r") as handle:
             simulation_config = yaml.load(handle, Loader=yaml.FullLoader)
-        plumed_config = self._plumed_config_from_simulation(simulation_config)
-        reference_pdb = entry.get("reference_pdb")
-        if plumed_config is not None and reference_pdb:
-            plumed_config["reference_pdb_file"] = reference_pdb
-        return simulation_config
+        return self._apply_topology_for_pool_entry(simulation_config, entry)
 
     def _inject_proton_transfer_config(
         self,
@@ -629,8 +640,7 @@ class active_learning_launcher:
         if not os.path.exists(model_config_path):
             self._make_model_config(0, model_config_path)
 
-        with open(self.simulation_config_path, "r") as f:
-            base_config = yaml.load(f, Loader=yaml.FullLoader)
+        base_config = self._load_base_simulation_config()
 
         def write_config(task, structure_path, config_path, **kwargs):
             write_base_scan_task_config(
@@ -715,11 +725,28 @@ class active_learning_launcher:
         if os.path.exists(state_path):
             self.structure_pool_state = self._load_structure_pool()
             if self.multi_system_mode:
+                updated = False
                 for entry in self.structure_pool_state["entries"]:
                     if "cluster_mol_path" not in entry and entry.get("name"):
                         entry["cluster_mol_path"] = self._cluster_mol_path_for_system(
                             entry["name"]
                         )
+                        updated = True
+                    system = self._system_manifest_entry_for_pool_entry(entry)
+                    if system is not None:
+                        for key, value in (
+                            ("simulation_config", system.simulation_config),
+                            ("reference_pdb", system.reference_pdb),
+                            ("source_structure", system.source_structure),
+                            ("charge", system.charge),
+                            ("backbone_indices", system.backbone_indices),
+                            ("Calpha_indices", system.Calpha_indices),
+                        ):
+                            if value is not None and entry.get(key) != value:
+                                entry[key] = value
+                                updated = True
+                if updated:
+                    self._save_structure_pool()
             logger.info(
                 f"Loaded structure pool with {len(self.structure_pool_state['entries'])} entries"
             )
@@ -745,6 +772,9 @@ class active_learning_launcher:
                     "reference_pdb": system.reference_pdb,
                     "source_structure": system.source_structure,
                     "cluster_mol_path": self._cluster_mol_path_for_system(system.name),
+                    "charge": system.charge,
+                    "backbone_indices": system.backbone_indices,
+                    "Calpha_indices": system.Calpha_indices,
                 }
                 if system.reference_sdf:
                     entry["reference_sdf"] = system.reference_sdf
@@ -757,8 +787,7 @@ class active_learning_launcher:
             )
             return
 
-        with open(self.simulation_config_path, "r") as f:
-            simulation_config = yaml.load(f, Loader=yaml.FullLoader)
+        simulation_config = self._load_base_simulation_config()
         initial_path = os.path.abspath(simulation_config["System"]["structure_file"])
         pool_dir = self._structure_pool_dir()
         os.makedirs(pool_dir, exist_ok=True)
@@ -964,6 +993,8 @@ class active_learning_launcher:
             cluster_mol_path = entry.get("cluster_mol_path")
             if cluster_mol_path:
                 extraction_config["Extractor"]["reference_mol_path"] = cluster_mol_path
+        elif self.reference_pdb_path is not None:
+            extraction_config["Extractor"]["reference_mol_path"] = self.output_mol_path
         if i <= 0 and (self.reset_parameters or self.pretrain_path is None):
             extraction_config["Extractor"]["extract_method"] = "random"
         with open(extraction_config_path, "w") as f:
