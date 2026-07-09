@@ -128,7 +128,7 @@ def write_terachem_input(info: Dict[str, Any], terachem_input_file: str, indices
                 if constraint_type == "bond":
                     f.write(f"{constraint_type} {constraint_params['x0']} {constraint_params['x1']} {constraint_params['num']} {constraint_params['i0']}_{constraint_params['i1']}\n")
             f.write("$end\n")
-        elif "constraint_freeze" in info:
+        if "constraint_freeze" in info:
             constraint_freeze_section = info["constraint_freeze"]
             f.write("$constraint_freeze\n")
             for constraint_type, constraint_params in constraint_freeze_section.items():
