@@ -61,16 +61,16 @@ def parse_terachem_input(terachem_input_file: str) -> Dict[str, Dict[str, Any]]:
                 current_section = None
             else:
                 raise ValueError(f"Unexpected end in section: {current_section}")
-        # start of other sections
-        elif clean_line.startswith("$"):
-            current_section = clean_line[1:]
-            info[current_section] = defaultdict(list)
         # end of other sections
         elif clean_line == "$end":
             if current_section == "main" or current_section is None:
                 raise ValueError(f"Unexpected $end in section: {current_section}")
             else:
                 current_section = None
+        # start of other sections
+        elif clean_line.startswith("$"):
+            current_section = clean_line[1:]
+            info[current_section] = defaultdict(list)
         # parse key value pairs in main section
         elif current_section == "main":
             key, *value = clean_line.split()
@@ -135,7 +135,7 @@ def write_terachem_input(info: Dict[str, Any], terachem_input_file: str, indices
                 if _is_xyz_constraint(constraint_type):
                     for i in range(0, len(constraint_params), indices_per_line):
                         f.write(f"{constraint_type} {','.join(map(str, constraint_params[i:i+indices_per_line]))}\n")
-                else:
+                elif constraint_type != "raw_content":
                     for i in range(0, len(constraint_params), indices_per_line):
                         f.write(f"{constraint_type} {','.join(map(lambda indices: '_'.join(map(str, indices)), constraint_params[i:i+indices_per_line]))}\n")
             f.write("$end\n")
