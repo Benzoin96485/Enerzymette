@@ -151,8 +151,12 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
     i0, i1 = _resolve_scan_bond_indices(bond_config, reference_pdb)
     logger.info(f"Scan bond indices from config: i0={i0}, i1={i1}")
 
-    topology_dir = os.path.join(os.path.abspath(output_path), "topology")
-    charge = _charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
+    if data.get("charge") is not None:
+        charge = int(data["charge"])
+        logger.info(f"Using charge ({charge}) from scan config {scan_config_path}")
+    else:
+        topology_dir = os.path.join(os.path.abspath(output_path), "topology")
+        charge = _charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
 
     return {
         "main": {

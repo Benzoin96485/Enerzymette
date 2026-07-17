@@ -42,8 +42,9 @@ class EnerzymeNEBLauncher:
         model_path: str
             The path to the NNP model directory, which contains the config.yaml file and the model folder.
         reference_path: str
-            The path to the reference quantum chemistry input file that contains the charge, spin multiplicity, and optimizationconstraints. 
-            Now only TeraChem input file with fixed atom constraints is supported.
+            The path to the reference file for charge, spin multiplicity, and freeze constraints.
+            Accepts a TeraChem input with fixed-atom constraints, or a YAML neb_config
+            (reference_pdb, freeze_index_types, optional charge / reference_sdf / multiplicity).
         server_config_path: str
             The path to the server config file.
         n_images: int
@@ -86,13 +87,17 @@ class EnerzymeNEBLauncher:
             logger.info(f"Port {self.port} is available")
         self.reactant_name = reactant_name
         self.product_name = product_name
-        self.reference = self.parse_reference(reference_path, "terachem_input")
+        from .io import infer_reference_type
+        self.reference_type = infer_reference_type(reference_path)
+        self.reference = self.parse_reference(reference_path, self.reference_type)
         self.constraint_freeze_xyz = self.reference.get("constraint_freeze", {}).get("xyz", [])
         logger.info(f"Constraint freeze xyz: {self.constraint_freeze_xyz}")
-        self.charge = self.reference.get("main", {}).get("charge", 0)
+        self.charge = int(self.reference.get("main", {}).get("charge", 0))
         logger.info(f"Charge: {self.charge}")
-        self.multiplicity = self.reference.get("main", {}).get("spinmult", 1)
+        self.multiplicity = int(self.reference.get("main", {}).get("spinmult", 1))
         logger.info(f"Multiplicity: {self.multiplicity}")
+        # neb_config freeze indices are 0-based (like scan_config); TeraChem is 1-based
+        self.idx_start_from = 0 if self.reference_type == "neb_config" else 1
         self.interrupt_strategy = interrupt_strategy
         self.enerzyme_subprocess = None
         self.max_restart_attempts = max_restart_attempts
@@ -338,10 +343,16 @@ class EnerzymeNEBLauncher:
             from ..terachem.io import parse_terachem_input
             if not os.path.exists(reference_path):
                 logger.warning(f"Reference file {reference_path} does not exist")
-            else:
-                return parse_terachem_input(reference_path)
-        else:
-            raise NotImplementedError(f"Reference type {reference_type} is not supported")
+                return {"main": {}, "constraint_freeze": {}}
+            return parse_terachem_input(reference_path)
+        if reference_type == "neb_config":
+            logger.info(f"Parsing system information from NEB config {reference_path}")
+            from .io import parse_neb_config
+            if not os.path.exists(reference_path):
+                logger.warning(f"Reference file {reference_path} does not exist")
+                return {"main": {}, "constraint_freeze": {}}
+            return parse_neb_config(reference_path, self.output_path)
+        raise NotImplementedError(f"Reference type {reference_type} is not supported")
 
     def write_enerzyme_wrapper(self, wrapper_path: str):
         wrapper_str = f"""enerzyme request -i $1 -u 0.0.0.0:{self.port}
@@ -451,7 +462,8 @@ class EnerzymeNEBLauncher:
             multiplicity=self.multiplicity,
             optimizer=self.optimization_method,
             min_spring_constant=self.min_spring_constant,
-            max_spring_constant=self.max_spring_constant
+            max_spring_constant=self.max_spring_constant,
+            idx_start_from=self.idx_start_from,
         )
 
     def launch_elementary_reaction(self, 

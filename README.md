@@ -103,7 +103,7 @@ enerzymette enerzyme_scan \
 - `altoolkit/get_index.py` — select backbone/Cα atom indices from PDB for constraint setup.
 - `mep_util.py` — CI, intermediate, and product-frame detection on the scan path.
 
-Also supports PLUMED CV scans (`-pp`, `-psc`), YAML `scan_config` as an alternative to TeraChem input, and `altoolkit/launcher.py` for active-learning steered MD.
+Also supports PLUMED CV scans (`-pp`, `-psc`), YAML `scan_config` as an alternative to TeraChem input (optional `charge` skips PDB charge derivation), and `altoolkit/launcher.py` for active-learning steered MD.
 
 ## Enerzyme NEB Launcher
 
@@ -121,15 +121,25 @@ enerzymette enerzyme_neb \
     -n 8 -b 5001 -i stdout
 ```
 
-- `-q` — Reference TeraChem input file for charge, spin, and `constraint_freeze` atoms.
+- `-q` — Reference TeraChem input, or YAML `neb_config` (`reference_pdb`, `freeze_index_types`; optional `charge` skips PDB charge derivation, plus `reference_sdf` / `multiplicity`).
 - `-c` — Enerzyme server config (`cuda`, `dtype`, `neighbor_list`, …).
 - `-n` — number of NEB images (including endpoints).
 - `-b` — server port; `-i stdout` interrupts ORCA when an intermediate minimum is detected.
 
+Example `neb_config.yaml`:
+```yaml
+reference_pdb: cluster.pdb
+freeze_index_types:
+  - backbone
+charge: 0          # optional; if omitted, charge is derived via enerzyme bond (+ optional reference_sdf)
+multiplicity: 1
+# reference_sdf: ligands.sdf
+```
+
 **Supporting utilities:**
 
 - `nebtoolkit/launcher.py` — `EnerzymeNEBLauncher` (server lifecycle, ORCA subprocess, restart/backtrack, chaining).
-- `nebtoolkit/io.py` — `write_orca_neb_in` for ORCA NEB input generation; MEP parsing from ORCA output.
+- `nebtoolkit/io.py` — `parse_neb_config` / `write_orca_neb_in` for YAML or TeraChem references and ORCA NEB input; MEP parsing from ORCA output.
 - `nebtoolkit/analysis.py`, `nebtoolkit/network.py` — convergence/CI checks and port selection.
 - `altoolkit/get_index.py` — backbone atom indices for frozen constraints in NEB input.
 - `mep_util.py` — intermediate and rate-determining-step detection (shared with the scan launcher).

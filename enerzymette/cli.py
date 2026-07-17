@@ -69,7 +69,7 @@ def get_parser():
         help='model path', default=".."
     )
     parser_launch_enerzyme_neb.add_argument('-q', '--reference', type=str,
-        help='quantum chemistry parameters reference path'
+        help='TeraChem input file or neb_config YAML (reference_pdb, freeze_index_types; optional charge skips PDB charge derivation)'
     )
     parser_launch_enerzyme_neb.add_argument('-c', '--server_config', type=str,
         help='server config path'
@@ -114,7 +114,7 @@ def get_parser():
         help='model path', default=".."
     )
     parser_launch_enerzyme_scan.add_argument('-q', '--reference', type=str,
-        help='TeraChem input file or scan config YAML (reference_pdb, freeze_index_types, sammt bond scan)'
+        help='TeraChem input file or scan_config YAML (reference_pdb, freeze_index_types, sammt bond scan; optional charge skips PDB charge derivation)'
     )
     parser_launch_enerzyme_scan.add_argument('-mc', '--model_config', type=str,
         help='model config path', default=None
