@@ -93,6 +93,7 @@ def write_orca_neb_in(
     pre_opt: bool=True,
     use_ts: bool=False,
     optimizer: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS",
+    coordsys: Literal["cartesian", "redundant"]="redundant",
     constraint_freeze_xyz: List[int]=[],
     charge: int=0,
     multiplicity: int=1,
@@ -106,6 +107,10 @@ def write_orca_neb_in(
 
 %method
 ProgExt "{os.path.abspath(wrapper_path)}"
+end
+
+%geom
+coordsys {coordsys}
 end
 
 %neb

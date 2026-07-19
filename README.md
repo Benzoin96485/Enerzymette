@@ -115,14 +115,18 @@ enerzymette enerzyme_neb \
     -r <reactant.xyz> \
     -p <product.xyz> \
     -o <output_dir> \
-    -m <model_dir> \
-    -q <reference.in> \
+    -q <neb_config.yaml> \
     -c <server.yaml> \
+    -cp uma \
+    -t <ts_guess.xyz> \
     -n 8 -b 5001 -i stdout
 ```
 
 - `-q` — Reference TeraChem input, or YAML `neb_config` (`reference_pdb`, `freeze_index_types`; optional `charge` skips PDB charge derivation, plus `reference_sdf` / `multiplicity`).
-- `-c` — Enerzyme server config (`cuda`, `dtype`, `neighbor_list`, …).
+- `-c` — Enerzyme server config (`cuda`, `dtype`, `neighbor_list`, …). For pure UMA use `server_uma.yaml` with `internal_calculator_weight: 0`.
+- `-cp` — External calculator patch path or registry key (e.g. `uma`); required for shell-mode UMA.
+- `-t` — Optional initial TS guess structure (enables ORCA `%neb TS`).
+- `-m` — Trained model directory (optional in external-calculator shell mode).
 - `-n` — number of NEB images (including endpoints).
 - `-b` — server port; `-i stdout` interrupts ORCA when an intermediate minimum is detected.
 

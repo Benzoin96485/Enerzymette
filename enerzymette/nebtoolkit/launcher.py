@@ -16,10 +16,12 @@ class EnerzymeNEBLauncher:
         reactant_path: str,
         product_path: str,
         output_path: str,
-        model_path: str,
         reference_path: str,
         server_config_path: str,
+        model_path: Optional[str]=None,
         model_config_path: Optional[str]=None,
+        calculator_patch: Optional[str]=None,
+        ts_path: Optional[str]=None,
         n_images: int=25,
         port: int=5000,
         reactant_name: str="1a",
@@ -28,7 +30,8 @@ class EnerzymeNEBLauncher:
         optimization_method: Literal["LBFGS", "BFGS", "VPO", "FIRE"]="LBFGS",
         max_restart_attempts: int=10,
         min_spring_constant: float=0.01,
-        max_spring_constant: float=0.1
+        max_spring_constant: float=0.1,
+        coordsys: Literal["cartesian", "redundant"]="redundant",
     ) -> None:
         """
         Params
@@ -39,14 +42,21 @@ class EnerzymeNEBLauncher:
             The path to the product file, which should be readable by ASE.
         output_path: str
             The path to the output directory.
-        model_path: str
-            The path to the NNP model directory, which contains the config.yaml file and the model folder.
+        model_path: str, optional
+            The path to the NNP model directory (config.yaml + checkpoints).
+            Optional in external-calculator shell mode (``internal_calculator_weight: 0``).
         reference_path: str
             The path to the reference file for charge, spin multiplicity, and freeze constraints.
             Accepts a TeraChem input with fixed-atom constraints, or a YAML neb_config
             (reference_pdb, freeze_index_types, optional charge / reference_sdf / multiplicity).
         server_config_path: str
             The path to the server config file.
+        calculator_patch: str, optional
+            Path to an external calculator patch ``.py``, or a registry key such as
+            ``\"uma\"`` (resolved via ``external_calculator.get_calculator_patch``).
+            Required for pure external-calculator (e.g. UMA) shell mode.
+        ts_path: str, optional
+            Initial TS guess structure for the first elementary NEB (ASE-readable).
         n_images: int
             The number of images in the NEB chain (including the reactant and product).
         port: int
@@ -76,6 +86,12 @@ class EnerzymeNEBLauncher:
         self.model_path = model_path
         self.server_config_path = server_config_path
         self.model_config_path = model_config_path
+        if calculator_patch is not None and not os.path.isfile(calculator_patch):
+            from ..external_calculator import get_calculator_patch
+            calculator_patch = get_calculator_patch(calculator_patch)
+        self.calculator_patch = calculator_patch
+        self.initial_ts_path = ts_path
+        self.coordsys = coordsys
         self.optimization_method = optimization_method
         self.ci_neb_pattern = re.compile(r"\s+" + self.optimization_method + r"\s+\d+\s+(\d+)\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+")
         self.port = find_available_port(start_port=port)
@@ -136,12 +152,21 @@ class EnerzymeNEBLauncher:
 
     def launch(self):
         # launch enerzyme server
+        listen_cmd = [
+            "enerzyme", "listen",
+            "-c", self.server_config_path,
+            "-o", self.output_path,
+            "-b", f"0.0.0.0:{self.port}",
+        ]
+        if self.model_path is not None:
+            listen_cmd.extend(["-m", self.model_path])
         if self.model_config_path is not None:
-            model_config_arg = ["-mc", self.model_config_path]
-        else:
-            model_config_arg = []
+            listen_cmd.extend(["-mc", self.model_config_path])
+        if self.calculator_patch is not None:
+            listen_cmd.extend(["-cp", self.calculator_patch])
+            logger.info(f"Using calculator patch: {self.calculator_patch}")
         enerzyme_subprocess = subprocess.Popen(
-            ["enerzyme", "listen", "-c", self.server_config_path, "-o", self.output_path, "-m", self.model_path, "-b", f"0.0.0.0:{self.port}"] + model_config_arg, 
+            listen_cmd,
             cwd=self.output_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT
@@ -172,7 +197,7 @@ class EnerzymeNEBLauncher:
             current_product_name = self.product_name
             current_reactant_path = self.reactant_path
             current_product_path = self.product_path
-            current_ts_path = None
+            current_ts_path = self.initial_ts_path
 
             resume = False
             recall = False
@@ -210,7 +235,7 @@ class EnerzymeNEBLauncher:
                         current_reactant_path = os.path.join(elementary_reaction_path, f"reactant.xyz")
                         current_product_path = os.path.join(elementary_reaction_path, f"product.xyz")
                         current_ts_path = os.path.join(elementary_reaction_path, f"ts.xyz")
-                        if not os.path.exists(current_reactant_path):
+                        if not os.path.exists(current_ts_path):
                             current_ts_path = None
                     else:
                         csv_fp.write(f"{current_reactant_name},{current_product_name}\n")
@@ -389,6 +414,8 @@ class EnerzymeNEBLauncher:
         neb_err_fp = open(os.path.join(elementary_reaction_path, "neb.err"), "w")
         
         intermediate_indices = []
+        ci_index = -1
+        mep_path_info = None
         orca_subprocess = subprocess.Popen(
             [self.orca_exe, "neb.in"], cwd=elementary_reaction_path,
             stdout=subprocess.PIPE,
@@ -403,7 +430,6 @@ class EnerzymeNEBLauncher:
                 mep_path_info = get_mep_path_info(elementary_reaction_path)
                 intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
             elif self.interrupt_strategy == "stdout":
-                ci_index = -1
         # Read ORCA subprocess stdout line by line and kill upon detecting intermediate minimum
                 while orca_subprocess.poll() is None:
                     line = orca_subprocess.stdout.readline()
@@ -435,6 +461,12 @@ class EnerzymeNEBLauncher:
                 else:
                     mep_path_info = get_mep_path_info(elementary_reaction_path)
 
+                # ORCA may converge without ever printing "Possible intermediate minimum".
+                # Always rescan the final MEP so post-TS local minima still trigger chaining.
+                mep_path_info = get_mep_path_info(elementary_reaction_path)
+                if mep_path_info is not None:
+                    intermediate_indices = find_intermediate_indices(mep_path_info["energies"])
+
         except Exception as e:
             neb_out_fp.close()
             neb_err_fp.close()
@@ -457,6 +489,7 @@ class EnerzymeNEBLauncher:
             restart=restart,
             pre_opt=pre_opt,
             use_ts=use_ts,
+            coordsys=self.coordsys,
             constraint_freeze_xyz=self.constraint_freeze_xyz, 
             charge=self.charge, 
             multiplicity=self.multiplicity,
@@ -488,12 +521,14 @@ class EnerzymeNEBLauncher:
         logger.info(f"Reactant and product written to {elementary_reaction_path}")
 
         # read ts
+        use_ts = False
         if ts_path is not None:
             logger.info(f"Reading guessed transition state from {ts_path}")
             if os.path.exists(ts_path):
                 ts_atoms = ase.io.read(ts_path, index=-1)
                 ase.io.write(os.path.join(elementary_reaction_path, f"ts.xyz"), ts_atoms, format="xyz")
                 logger.info(f"Guessed transition state written to {elementary_reaction_path}")
+                use_ts = True
             else:
                 logger.warning(f"Guessed transition state file {ts_path} does not exist")
 
@@ -503,7 +538,7 @@ class EnerzymeNEBLauncher:
 
         # write neb.in
         neb_in_path = os.path.join(elementary_reaction_path, "neb.in")
-        self._write_orca_neb_in(neb_in_path, wrapper_path)
+        self._write_orca_neb_in(neb_in_path, wrapper_path, use_ts=use_ts)
         
         # spawn orca subprocess to run neb
         return self.monitor_elementary_reaction(elementary_reaction_path, neb_in_path)
