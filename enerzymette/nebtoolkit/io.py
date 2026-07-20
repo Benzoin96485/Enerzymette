@@ -101,7 +101,7 @@ def write_orca_neb_in(
     max_spring_constant: float=0.1,
     idx_start_from: int=1,
 ):
-    if n_images < 2:
+    if n_images < 3:
         raise ValueError("n_images must be greater than 2")
     neb_in_prefix = f"""! ExtOpt NEB-CI
 
