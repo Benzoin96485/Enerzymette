@@ -1,10 +1,10 @@
 import os
-import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import yaml
 
 from ..altoolkit.get_index import get_indices, index_type_map
+from ..io_utils import abs_path, charge_from_reference_pdb
 from ..logger import logger
 from ..plumed_config_generator.sammt import get_sammt_scan_bond_indices
 from ..terachem.io import parse_terachem_input, write_terachem_input
@@ -20,57 +20,6 @@ def infer_reference_type(reference_path: str) -> str:
     if ext in {".yaml", ".yml"}:
         return "scan_config"
     return "terachem_input"
-
-
-def _abs_path(path: str, base_dir: str) -> str:
-    if not os.path.isabs(path):
-        return os.path.abspath(os.path.join(base_dir, path))
-    return os.path.abspath(path)
-
-
-def _run_enerzyme_bond(
-    reference_pdb: str,
-    output_img_path: str,
-    output_mol_path: str,
-    reference_sdf: Optional[str] = None,
-) -> None:
-    enerzyme_bond_args = [
-        "enerzyme", "bond",
-        "-p", reference_pdb,
-        "-i", output_img_path,
-        "-m", output_mol_path,
-    ]
-    if reference_sdf is not None:
-        enerzyme_bond_args.extend(["-t", reference_sdf])
-    enerzyme_subprocess = subprocess.Popen(enerzyme_bond_args)
-    enerzyme_subprocess.wait()
-
-
-def _charge_from_reference_pdb(
-    reference_pdb: str,
-    topology_dir: str,
-    reference_sdf: Optional[str] = None,
-) -> int:
-    from rdkit.Chem import GetFormalCharge, MolFromMolFile
-
-    os.makedirs(topology_dir, exist_ok=True)
-    output_img_path = os.path.join(topology_dir, "cluster.png")
-    output_mol_path = os.path.join(topology_dir, "cluster.mol")
-    _run_enerzyme_bond(
-        reference_pdb,
-        output_img_path,
-        output_mol_path,
-        reference_sdf=reference_sdf,
-    )
-    cluster_mol = MolFromMolFile(output_mol_path, removeHs=False)
-    if cluster_mol is None:
-        raise ValueError(f"Could not read topology mol written by enerzyme bond: {output_mol_path}")
-    charge = GetFormalCharge(cluster_mol)
-    logger.info(
-        f"Using total charge ({charge}) from reference PDB {reference_pdb}"
-        + (f" with template {reference_sdf}" if reference_sdf else "")
-    )
-    return charge
 
 
 def _resolve_scan_bond_indices(
@@ -111,13 +60,13 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
     reference_pdb = data.get("reference_pdb")
     if not reference_pdb:
         raise ValueError(f"Scan config must have reference_pdb: {scan_config_path}")
-    reference_pdb = _abs_path(reference_pdb, config_dir)
+    reference_pdb = abs_path(reference_pdb, config_dir)
     if not os.path.exists(reference_pdb):
         raise FileNotFoundError(f"reference_pdb not found: {reference_pdb}")
 
     reference_sdf = data.get("reference_sdf")
     if reference_sdf:
-        reference_sdf = _abs_path(reference_sdf, config_dir)
+        reference_sdf = abs_path(reference_sdf, config_dir)
         if not os.path.exists(reference_sdf):
             raise FileNotFoundError(f"reference_sdf not found: {reference_sdf}")
 
@@ -156,7 +105,7 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
         logger.info(f"Using charge ({charge}) from scan config {scan_config_path}")
     else:
         topology_dir = os.path.join(os.path.abspath(output_path), "topology")
-        charge = _charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
+        charge = charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
 
     return {
         "main": {

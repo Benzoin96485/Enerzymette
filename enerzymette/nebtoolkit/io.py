@@ -5,8 +5,8 @@ from shutil import copy
 import yaml
 
 from ..altoolkit.get_index import get_indices, index_type_map
+from ..io_utils import abs_path, charge_from_reference_pdb
 from ..logger import logger
-from ..scantoolkit.io import _abs_path, _charge_from_reference_pdb
 
 
 def infer_reference_type(reference_path: str) -> str:
@@ -36,13 +36,13 @@ def parse_neb_config(neb_config_path: str, output_path: str) -> Dict[str, Dict[s
     reference_pdb = data.get("reference_pdb")
     if not reference_pdb:
         raise ValueError(f"NEB config must have reference_pdb: {neb_config_path}")
-    reference_pdb = _abs_path(reference_pdb, config_dir)
+    reference_pdb = abs_path(reference_pdb, config_dir)
     if not os.path.exists(reference_pdb):
         raise FileNotFoundError(f"reference_pdb not found: {reference_pdb}")
 
     reference_sdf = data.get("reference_sdf")
     if reference_sdf:
-        reference_sdf = _abs_path(reference_sdf, config_dir)
+        reference_sdf = abs_path(reference_sdf, config_dir)
         if not os.path.exists(reference_sdf):
             raise FileNotFoundError(f"reference_sdf not found: {reference_sdf}")
 
@@ -72,7 +72,7 @@ def parse_neb_config(neb_config_path: str, output_path: str) -> Dict[str, Dict[s
         logger.info(f"Using charge ({charge}) from NEB config {neb_config_path}")
     else:
         topology_dir = os.path.join(os.path.abspath(output_path), "topology")
-        charge = _charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
+        charge = charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
 
     return {
         "main": {
