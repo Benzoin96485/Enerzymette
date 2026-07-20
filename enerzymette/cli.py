@@ -66,10 +66,10 @@ def get_parser():
         help='output path', default="."
     )
     parser_launch_enerzyme_neb.add_argument('-m', '--model', type=str,
-        help='model path', default=".."
+        help='model path (optional for external-calculator shell mode)', default=None
     )
     parser_launch_enerzyme_neb.add_argument('-q', '--reference', type=str,
-        help='quantum chemistry parameters reference path'
+        help='TeraChem input file or neb_config YAML (reference_pdb, freeze_index_types; optional charge skips PDB charge derivation)'
     )
     parser_launch_enerzyme_neb.add_argument('-c', '--server_config', type=str,
         help='server config path'
@@ -77,11 +77,20 @@ def get_parser():
     parser_launch_enerzyme_neb.add_argument('-mc', '--model_config', type=str,
         help='model config path', default=None
     )
+    parser_launch_enerzyme_neb.add_argument('-cp', '--calculator_patch', type=str,
+        help='external calculator patch path or key (e.g. uma)', default=None
+    )
+    parser_launch_enerzyme_neb.add_argument('-t', '--ts', type=str,
+        help='initial TS guess structure path', default=None
+    )
     parser_launch_enerzyme_neb.add_argument('-n', '--n_images', type=int,
         help='number of images', default=25
     )
     parser_launch_enerzyme_neb.add_argument('-b', '--port', type=int,
         help='port', default=5000
+    )
+    parser_launch_enerzyme_neb.add_argument('-cs', '--coordsys', type=str,
+        help='coordinates system', default="redundant"
     )
     parser_launch_enerzyme_neb.add_argument('--optimization_method', type=str,
         help='optimization method', default="LBFGS"
@@ -114,7 +123,7 @@ def get_parser():
         help='model path', default=".."
     )
     parser_launch_enerzyme_scan.add_argument('-q', '--reference', type=str,
-        help='TeraChem input file or scan config YAML (reference_pdb, freeze_index_types, sammt bond scan)'
+        help='TeraChem input file or scan_config YAML (reference_pdb, freeze_index_types, sammt bond scan; optional charge skips PDB charge derivation)'
     )
     parser_launch_enerzyme_scan.add_argument('-mc', '--model_config', type=str,
         help='model config path', default=None
@@ -256,8 +265,11 @@ def main():
             reference_path=args.reference,
             server_config_path=args.server_config,
             model_config_path=args.model_config,
+            calculator_patch=args.calculator_patch,
+            ts_path=args.ts,
             n_images=args.n_images,
             port=args.port,
+            coordsys=args.coordsys,
             interrupt_strategy=args.interrupt_strategy,
             optimization_method=args.optimization_method,
             max_restart_attempts=args.max_restart_attempts,
