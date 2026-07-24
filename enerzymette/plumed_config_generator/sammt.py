@@ -1,9 +1,29 @@
+"""SAM-dependent methyltransferase (SAMMT) PLUMED generator.
+
+This is a specialized :class:`BondReactionConfigGenerator` with:
+
+* breaking bond = SAM SD – SAM CE
+* forming bond  = SAM CE – substrate nucleophile
+* main CV ``dd = d(CE, Nu) - d(SD, CE)``
+
+Users typically provide only ``substrate`` and ``nucleophile`` together with
+``reference_pdb_file``; explicit ``index_sulphur`` / ``index_methyl_carbon`` /
+``index_nucleophile`` remain supported.
+"""
+
+from __future__ import annotations
+
 from typing import Dict, Optional, Tuple
 
 from ase import Atoms
-from ase.units import kcal, mol
 
-from enerzymette.plumed_config_generator._engine import PlumedConfigGenerator
+from enerzymette.plumed_config_generator.atom_selection import (
+    AtomSpec,
+    BondPairSpec,
+    parse_pdb_atoms,
+    resolve_atom_index,
+)
+from enerzymette.plumed_config_generator.bond_reaction import BondReactionConfigGenerator
 
 _SAMMT_PRINT_ARGS = "d0,d1,dsort.1,dd,mr.*"
 
@@ -29,41 +49,38 @@ def get_sammt_index(
     substrate: str,
     nucleophile: str,
 ) -> Tuple[int, int, int]:
-    """Resolve SAM SD, SAM CE, and substrate nucleophile indices from a PDB file."""
-    index_sulphur = None
-    index_methyl_carbon = None
-    index_nucleophile = None
+    """Resolve SAM SD, SAM CE, and substrate nucleophile indices from a PDB file.
 
-    with open(reference_pdb_file, "r") as f:
-        atom_count = 0
-        for line in f.readlines():
-            if line.startswith("ATOM") or line.startswith("HETATM"):
-                resname = line[17:20].strip()
-                atomname = line[11:16].strip()
-                if resname == "SAM":
-                    if atomname == "SD":
-                        index_sulphur = atom_count
-                    elif atomname == "CE":
-                        index_methyl_carbon = atom_count
-                elif resname == substrate and atomname == nucleophile:
-                    index_nucleophile = atom_count
-                atom_count += 1
-
-    if index_sulphur is None:
-        raise ValueError(f"Could not find SAM SD in {reference_pdb_file}")
-    if index_methyl_carbon is None:
-        raise ValueError(f"Could not find SAM CE in {reference_pdb_file}")
-    if index_nucleophile is None:
-        raise ValueError(
-            f"Could not find nucleophile atom {nucleophile!r} in residue "
-            f"{substrate!r} from {reference_pdb_file}"
-        )
-
-    return (
-        index_sulphur + idx_start_from,
-        index_methyl_carbon + idx_start_from,
-        index_nucleophile + idx_start_from,
+    Matches the historical SAMMT convention: select by residue name and atom
+    name only.  If multiple atoms match, keep the last occurrence in file order
+    (same as the pre-refactor scanner).
+    """
+    records = parse_pdb_atoms(reference_pdb_file)
+    index_sulphur = resolve_atom_index(
+        AtomSpec(residue_name="SAM", atom_name="SD"),
+        idx_start_from=idx_start_from,
+        reference_pdb_file=reference_pdb_file,
+        pdb_records=records,
+        label="SAM SD",
+        on_ambiguous="last",
     )
+    index_methyl_carbon = resolve_atom_index(
+        AtomSpec(residue_name="SAM", atom_name="CE"),
+        idx_start_from=idx_start_from,
+        reference_pdb_file=reference_pdb_file,
+        pdb_records=records,
+        label="SAM CE",
+        on_ambiguous="last",
+    )
+    index_nucleophile = resolve_atom_index(
+        AtomSpec(residue_name=substrate, atom_name=nucleophile),
+        idx_start_from=idx_start_from,
+        reference_pdb_file=reference_pdb_file,
+        pdb_records=records,
+        label=f"nucleophile {nucleophile!r} in residue {substrate!r}",
+        on_ambiguous="last",
+    )
+    return index_sulphur, index_methyl_carbon, index_nucleophile
 
 
 def _resolve_sammt_indices(
@@ -91,9 +108,10 @@ def _resolve_sammt_indices(
     return index_sulphur, index_methyl_carbon, index_nucleophile
 
 
-class SAMMTConfigGenerator(PlumedConfigGenerator):
+class SAMMTConfigGenerator(BondReactionConfigGenerator):
     """PLUMED generator for SAM-dependent methyltransferase reactions."""
 
+    default_cv_name = "dd"
     default_print_args = _SAMMT_PRINT_ARGS
 
     def __init__(
@@ -106,25 +124,51 @@ class SAMMTConfigGenerator(PlumedConfigGenerator):
         index_methyl_carbon: Optional[int] = None,
         index_nucleophile: Optional[int] = None,
         max_bond_length: Optional[float] = 3.0,
+        forming_bond=None,
+        breaking_bond=None,
         **kwargs,
     ) -> None:
-        super().__init__(system, **kwargs)
-        self.substrate = substrate
-        self.nucleophile = nucleophile
-        self.max_bond_length = max_bond_length
+        if forming_bond is not None or breaking_bond is not None:
+            raise ValueError(
+                "SAMMTConfigGenerator does not accept forming_bond/breaking_bond; "
+                "use substrate/nucleophile or explicit SAMMT indices instead"
+            )
+
+        idx_start_from = int(kwargs.get("idx_start_from", 1))
+        reference_pdb = kwargs.get("reference_pdb_file") or kwargs.get("reference_pdb")
         (
-            self.index_sulphur,
-            self.index_methyl_carbon,
-            self.index_nucleophile,
+            index_sulphur,
+            index_methyl_carbon,
+            index_nucleophile,
         ) = _resolve_sammt_indices(
-            self.idx_start_from,
-            self.reference_pdb,
+            idx_start_from,
+            reference_pdb,
             substrate,
             nucleophile,
             index_sulphur,
             index_methyl_carbon,
             index_nucleophile,
         )
+
+        super().__init__(
+            system,
+            forming_bond=BondPairSpec(
+                atom1=AtomSpec(index=index_methyl_carbon),
+                atom2=AtomSpec(index=index_nucleophile),
+            ),
+            breaking_bond=BondPairSpec(
+                atom1=AtomSpec(index=index_sulphur),
+                atom2=AtomSpec(index=index_methyl_carbon),
+            ),
+            max_bond_length=max_bond_length,
+            **kwargs,
+        )
+        self.substrate = substrate
+        self.nucleophile = nucleophile
+        self.index_sulphur = index_sulphur
+        self.index_methyl_carbon = index_methyl_carbon
+        self.index_nucleophile = index_nucleophile
+
         if self.proton_transfer_config.enabled and self.proton_transfer_config.donor is None:
             self.proton_transfer_config.donor = "nucleophile"
 
@@ -134,35 +178,8 @@ class SAMMTConfigGenerator(PlumedConfigGenerator):
             "sulfur": self.index_sulphur,
             "methyl_carbon": self.index_methyl_carbon,
             "nucleophile": self.index_nucleophile,
+            "forming_a": self.index_methyl_carbon,
+            "forming_b": self.index_nucleophile,
+            "breaking_a": self.index_sulphur,
+            "breaking_b": self.index_methyl_carbon,
         }
-
-    def define_main_rc(self) -> Tuple[str, str]:
-        lines = [
-            (
-                f"d0: DISTANCE ATOMS={self.index_sulphur + 1 - self.idx_start_from},"
-                f"{self.index_methyl_carbon + 1 - self.idx_start_from} NOPBC"
-            ),
-            (
-                f"d1: DISTANCE ATOMS={self.index_methyl_carbon + 1 - self.idx_start_from},"
-                f"{self.index_nucleophile + 1 - self.idx_start_from} NOPBC"
-            ),
-            "dsort: SORT ARG=d0,d1",
-        ]
-        if self.max_bond_length is not None:
-            lines.append(
-                f"uwall: UPPER_WALLS ARG=dsort.1 AT={self.max_bond_length} "
-                f"KAPPA={1000 * kcal / mol}"
-            )
-        lines.append("dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO")
-        return "dd", "\n".join(lines)
-
-    def calc_main_rc(self) -> float:
-        current_d0 = self.system.get_distance(
-            self.index_sulphur - self.idx_start_from,
-            self.index_methyl_carbon - self.idx_start_from,
-        )
-        current_d1 = self.system.get_distance(
-            self.index_methyl_carbon - self.idx_start_from,
-            self.index_nucleophile - self.idx_start_from,
-        )
-        return current_d1 - current_d0
