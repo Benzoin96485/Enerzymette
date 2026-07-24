@@ -91,6 +91,25 @@ def test_parse_and_resolve_pdb(tmp_path):
             reference_pdb_file=str(pdb),
         )
 
+    assert (
+        resolve_atom_index(
+            AtomSpec(residue_name="DHB", atom_name="O3"),
+            idx_start_from=0,
+            reference_pdb_file=str(pdb),
+            on_ambiguous="last",
+        )
+        == 3
+    )
+    assert (
+        resolve_atom_index(
+            AtomSpec(residue_name="DHB", atom_name="O3"),
+            idx_start_from=0,
+            reference_pdb_file=str(pdb),
+            on_ambiguous="first",
+        )
+        == 2
+    )
+
     o3 = resolve_atom_index(
         AtomSpec(chain_id="B", residue_name="DHB", atom_name="O3"),
         idx_start_from=0,

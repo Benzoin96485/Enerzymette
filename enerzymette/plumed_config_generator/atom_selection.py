@@ -240,8 +240,20 @@ def resolve_atom_index(
     pdb_records: Optional[Sequence[PdbAtomRecord]] = None,
     n_atoms: Optional[int] = None,
     label: str = "atom",
+    on_ambiguous: str = "error",
 ) -> int:
-    """Resolve ``spec`` to an index in the caller's ``idx_start_from`` convention."""
+    """Resolve ``spec`` to an index in the caller's ``idx_start_from`` convention.
+
+    ``on_ambiguous`` controls multi-match PDB selectors:
+
+    * ``"error"`` (default): raise ``ValueError``
+    * ``"last"``: keep the last matching atom in file order (historical SAMMT)
+    * ``"first"``: keep the first matching atom
+    """
+    if on_ambiguous not in {"error", "last", "first"}:
+        raise ValueError(
+            f"on_ambiguous must be 'error', 'last', or 'first'; got {on_ambiguous!r}"
+        )
     spec.validate(label=label)
 
     if spec.uses_explicit_index():
@@ -272,7 +284,7 @@ def resolve_atom_index(
             f"{label}: no PDB atom matched {_format_pdb_selector(spec)}"
             + (f" in {reference_pdb_file}" if reference_pdb_file else "")
         )
-    if len(matches) > 1:
+    if len(matches) > 1 and on_ambiguous == "error":
         details = ", ".join(
             f"order={record.order_index} "
             f"{record.chain_id}:{record.residue_name}{record.residue_number}/"
@@ -284,7 +296,8 @@ def resolve_atom_index(
             f"{label}: ambiguous PDB selector {_format_pdb_selector(spec)} "
             f"matched {len(matches)} atoms: {details}{extra}"
         )
-    return matches[0].order_index + idx_start_from
+    chosen = matches[-1] if on_ambiguous == "last" else matches[0]
+    return chosen.order_index + idx_start_from
 
 
 def resolve_bond_pair_indices(

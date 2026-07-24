@@ -51,10 +51,9 @@ def get_sammt_index(
 ) -> Tuple[int, int, int]:
     """Resolve SAM SD, SAM CE, and substrate nucleophile indices from a PDB file.
 
-    Matches the historical SAMMT convention: locate the unique SAM residue
-    atoms ``SD`` / ``CE`` and the unique ``(substrate, nucleophile)`` atom by
-    residue name and atom name (chain ID and residue number are not required
-    when the match is unique).
+    Matches the historical SAMMT convention: select by residue name and atom
+    name only.  If multiple atoms match, keep the last occurrence in file order
+    (same as the pre-refactor scanner).
     """
     records = parse_pdb_atoms(reference_pdb_file)
     index_sulphur = resolve_atom_index(
@@ -63,6 +62,7 @@ def get_sammt_index(
         reference_pdb_file=reference_pdb_file,
         pdb_records=records,
         label="SAM SD",
+        on_ambiguous="last",
     )
     index_methyl_carbon = resolve_atom_index(
         AtomSpec(residue_name="SAM", atom_name="CE"),
@@ -70,6 +70,7 @@ def get_sammt_index(
         reference_pdb_file=reference_pdb_file,
         pdb_records=records,
         label="SAM CE",
+        on_ambiguous="last",
     )
     index_nucleophile = resolve_atom_index(
         AtomSpec(residue_name=substrate, atom_name=nucleophile),
@@ -77,6 +78,7 @@ def get_sammt_index(
         reference_pdb_file=reference_pdb_file,
         pdb_records=records,
         label=f"nucleophile {nucleophile!r} in residue {substrate!r}",
+        on_ambiguous="last",
     )
     return index_sulphur, index_methyl_carbon, index_nucleophile
 

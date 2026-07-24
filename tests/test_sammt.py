@@ -34,6 +34,48 @@ def test_get_sammt_index_and_scan_bond(tmp_path):
     assert get_sammt_scan_bond_indices(str(pdb), "DHB", "O3") == (1, 2)
 
 
+def test_get_sammt_index_keeps_last_ambiguous_match(tmp_path):
+    """Historical SAMMT scanners overwrote matches; keep the last occurrence."""
+    pdb = tmp_path / "dup_sammt.pdb"
+    pdb.write_text(
+        "\n".join(
+            [
+                "HETATM    1  SD  SAM A   1       0.000   0.000   0.000  1.00  0.00           S",
+                "HETATM    2  CE  SAM A   1       1.800   0.000   0.000  1.00  0.00           C",
+                "HETATM    3  O3  DHB A   2       3.500   0.000   0.000  1.00  0.00           O",
+                "HETATM    4  SD  SAM B   3       0.000   1.000   0.000  1.00  0.00           S",
+                "HETATM    5  CE  SAM B   3       1.800   1.000   0.000  1.00  0.00           C",
+                "HETATM    6  O3  DHB B   4       3.500   1.000   0.000  1.00  0.00           O",
+            ]
+        )
+        + "\n"
+    )
+    assert get_sammt_index(1, str(pdb), "DHB", "O3") == (4, 5, 6)
+    assert get_sammt_scan_bond_indices(str(pdb), "DHB", "O3") == (4, 5)
+
+    system = Atoms(
+        symbols=["S", "C", "O", "S", "C", "O"],
+        positions=[
+            [0.0, 0.0, 0.0],
+            [1.8, 0.0, 0.0],
+            [3.5, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.8, 1.0, 0.0],
+            [3.5, 1.0, 0.0],
+        ],
+    )
+    gen = SAMMTConfigGenerator(
+        system,
+        idx_start_from=1,
+        reference_pdb_file=str(pdb),
+        substrate="DHB",
+        nucleophile="O3",
+    )
+    assert gen.get_indices()["sulphur"] == 4
+    assert gen.get_indices()["methyl_carbon"] == 5
+    assert gen.get_indices()["nucleophile"] == 6
+
+
 def test_sammt_from_pdb_matches_generic_difference(tmp_path):
     pdb = tmp_path / "sammt.pdb"
     _sammt_pdb(pdb)
