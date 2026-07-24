@@ -156,3 +156,44 @@ def test_resolve_scan_endpoints_bond_reaction():
     assert x1 == pytest.approx(-2.0)  # farther bound from +2
     assert num == 5
     assert rc.cv_name == "rc"
+
+
+def test_custom_cv_name_in_print_args():
+    system = _three_atom_line(d_break=1.5, d_form=2.5)
+    gen = BondReactionConfigGenerator(
+        system,
+        idx_start_from=1,
+        forming_bond={"atom1": {"index": 2}, "atom2": {"index": 3}},
+        breaking_bond={"atom1": {"index": 1}, "atom2": {"index": 2}},
+        cv_name="dd",
+        integrate_config={"n_step": 100},
+    )
+    assert gen.default_print_args == "d0,d1,dsort.1,dd,mr.*"
+    lines = gen.standard_steered_md(
+        lower_bound=-2.0,
+        upper_bound=2.0,
+        dump_interval=10,
+    )
+    assert any("MOVINGRESTRAINT ARG=dd" in line for line in lines)
+    assert any(line.startswith("PRINT ARG=d0,d1,dsort.1,dd,mr.*") for line in lines)
+    assert not any(",rc," in line or line.endswith(",rc") for line in lines if line.startswith("PRINT"))
+
+
+def test_forming_cv_name_d1_avoids_undefined_rc():
+    system = _three_atom_line()
+    gen = BondReactionConfigGenerator(
+        system,
+        idx_start_from=1,
+        forming_bond={"atom1": {"index": 2}, "atom2": {"index": 3}},
+        cv_name="d1",
+        integrate_config={"n_step": 50},
+    )
+    assert gen.default_print_args == "d1,mr.*"
+    lines = gen.standard_steered_md(
+        lower_bound=1.0,
+        upper_bound=3.0,
+        dump_interval=5,
+    )
+    print_line = next(line for line in lines if line.startswith("PRINT ARG="))
+    assert print_line == "PRINT ARG=d1,mr.* STRIDE=5"
+    assert "rc" not in print_line

@@ -87,7 +87,9 @@ class BondReactionConfigGenerator(PlumedConfigGenerator):
 
         self._mode = self._infer_mode()
         if self.default_print_args is None:
-            self.default_print_args = self._default_print_args_for_mode(self._mode)
+            self.default_print_args = self._default_print_args_for_mode(
+                self._mode, self.default_cv_name
+            )
 
     def _infer_mode(self) -> str:
         if self.forming_bond is not None and self.breaking_bond is not None:
@@ -97,12 +99,25 @@ class BondReactionConfigGenerator(PlumedConfigGenerator):
         return "breaking"
 
     @staticmethod
-    def _default_print_args_for_mode(mode: str) -> str:
+    def _default_print_args_for_mode(mode: str, cv_name: str) -> str:
+        """Build PRINT ARG list using the actual main CV label."""
         if mode == "difference":
-            return "d0,d1,dsort.1,rc,mr.*"
+            parts = ["d0", "d1", "dsort.1"]
+            if cv_name not in parts:
+                parts.append(cv_name)
+            parts.append("mr.*")
+            return ",".join(parts)
         if mode == "forming":
-            return "d1,rc,mr.*"
-        return "d0,rc,mr.*"
+            parts = ["d1"]
+            if cv_name != "d1":
+                parts.append(cv_name)
+            parts.append("mr.*")
+            return ",".join(parts)
+        parts = ["d0"]
+        if cv_name != "d0":
+            parts.append(cv_name)
+        parts.append("mr.*")
+        return ",".join(parts)
 
     def get_indices(self) -> Dict[str, int]:
         indices: Dict[str, int] = {}
