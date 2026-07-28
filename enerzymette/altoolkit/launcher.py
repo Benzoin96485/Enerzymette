@@ -973,10 +973,11 @@ class active_learning_launcher:
 
         if os.path.exists(simulation_trajectory_path):
             open(simulation_completed_flag, "w").close()
-            # In multi-system mode the pool is advanced by pre-simulation only
-            # (see _prepare_iteration_initial_structure), matching single-structure
-            # mode where the next round starts from the pre-sim end frame rather
-            # than the steered-MD end frame.
+            # Intentionally do not write steered-MD end frames back into the
+            # structure pool. Pool geometries are advanced only by
+            # pre-simulation in _prepare_iteration_initial_structure. With
+            # n_presimulation_steps_per_iteration == 0, reused multi-system
+            # entries keep their seed/equilibrated coordinates.
         self._persist_proton_transfer_state(i, simulation_path, simulation_config)
         logger.info(f"Simulation finished for {simulation_path}")
 
