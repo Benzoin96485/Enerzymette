@@ -21,6 +21,17 @@ from ._engine import (
     generate_scan_restraint,
     generate_steered_md,
 )
+from .atom_selection import (
+    AtomSpec,
+    BondPairSpec,
+    atom_spec_from_mapping,
+    bond_pair_from_mapping,
+    parse_pdb_atoms,
+    resolve_atom_index,
+    resolve_bond_pair_indices,
+    to_ase_index,
+    to_plumed_index,
+)
 from .proton_transfer import (
     LocalOpesProtonTransferPlugin,
     PROTON_TRANSFER_PLUGINS,
@@ -34,6 +45,8 @@ from .proton_transfer import (
 
 __all__ = [
     "PLUMED_CV_PLUGINS",
+    "AtomSpec",
+    "BondPairSpec",
     "PlumedConfigGenerator",
     "PlumedCvPluginSpec",
     "LocalOpesProtonTransferPlugin",
@@ -42,6 +55,8 @@ __all__ = [
     "ProtonTransferPlugin",
     "ProtonTransferScope",
     "append_optional_proton_transfer",
+    "atom_spec_from_mapping",
+    "bond_pair_from_mapping",
     "build_proton_transfer_config",
     "ReactionCoordinate",
     "generate_restrained_md",
@@ -53,9 +68,14 @@ __all__ = [
     "get_scan_method_name",
     "get_steered_method_name",
     "list_plumed_cv_plugin_keys",
+    "parse_pdb_atoms",
     "register_plumed_cv_plugin",
     "register_proton_transfer_plugin",
+    "resolve_atom_index",
+    "resolve_bond_pair_indices",
     "resolve_scan_endpoints",
+    "to_ase_index",
+    "to_plumed_index",
 ]
 
 
@@ -72,15 +92,26 @@ class PlumedCvPluginSpec:
 
 
 # Registry of CV plugins shipped with Enerzymette. Keys are used by CLI
-# (-pp sammt) and by scantoolkit / altoolkit when emitting Enerzyme configs.
+# (-pp sammt / -pp bond_reaction) and by scantoolkit / altoolkit when emitting
+# Enerzyme configs.
 PLUMED_CV_PLUGINS: Dict[str, PlumedCvPluginSpec] = {
+    "bond_reaction": PlumedCvPluginSpec(
+        key="bond_reaction",
+        module_name=".bond_reaction",
+        class_name="BondReactionConfigGenerator",
+        description=(
+            "Generic forming/breaking bond coordinate: forming only, breaking "
+            "only, or rc = d_forming − d_breaking; atoms from PDB selectors or "
+            "explicit indices."
+        ),
+    ),
     "sammt": PlumedCvPluginSpec(
         key="sammt",
         module_name=".sammt",
         class_name="SAMMTConfigGenerator",
         description=(
-            "SAM methyltransferase coordinate dd = d(S–CE) − d(CE–Nu); "
-            "indices from PDB (SAM SD/CE + substrate nucleophile) or explicit indices."
+            "SAM methyltransferase coordinate dd = d(CE–Nu) − d(SD–CE); "
+            "specialized bond_reaction with SAM SD/CE + substrate nucleophile."
         ),
     ),
 }

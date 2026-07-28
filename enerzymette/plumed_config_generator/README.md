@@ -2,11 +2,20 @@
 
 Enerzymette builds PLUMED input through class-based generator plugins. A plugin is a Python module that exposes a `PlumedConfigGenerator` subclass. Enerzyme receives the plugin module through `enerzyme simulate -pp <path>`, instantiates the configured class with the current `ase.Atoms` object plus YAML parameters, and calls the configured method to produce `plumed.dat`.
 
-The design separates three layers:
+The design separates four layers:
 
 - `PlumedConfigGenerator` in `_engine.py`: system-independent workflow methods for steered MD, restrained MD, naive steered MD, scan restraints, and PLUMED unit preamble.
-- Chemistry-specific generator subclasses such as `SAMMTConfigGenerator` in `sammt.py`: atom discovery, main reaction-coordinate definition, and optional additional restraints (e.g. `UPPER_WALLS`).
+- `BondReactionConfigGenerator` in `bond_reaction.py`: generic forming / breaking / difference bond reaction coordinates, optional additional restraints (e.g. `UPPER_WALLS`), with atom discovery via `atom_selection.py`.
+- Chemistry-specific generator subclasses such as `SAMMTConfigGenerator` in `sammt.py`: specialized presets that fill in bond pairs from domain conventions.
 - Proton-transfer plugins in `proton_transfer.py`, such as `local_opes`: optional auxiliary CV/bias builders that can be inserted into any generator through `proton_transfer`.
+
+```text
+arbitrary CV plugin
+        ↑
+BondReactionConfigGenerator   ← forming / breaking / difference
+        ↑
+SAMMTConfigGenerator          ← SAM SD–CE break, CE–Nu form
+```
 
 ## User Interface
 
@@ -70,15 +79,85 @@ Simulation:
         nucleophile: "O2'"
 ```
 
+CLI plugin keys (`enerzymette enerzyme_scan -pp ...`, active learning `-pp ...`):
+
+- `bond_reaction` → `BondReactionConfigGenerator`
+- `sammt` → `SAMMTConfigGenerator`
+
+## Bond Reaction Generator
+
+`BondReactionConfigGenerator` is the generic middle layer for reactions that can be described as bond forming, bond breaking, or both. Provide one or both of:
+
+- `forming_bond`: `{atom1, atom2}` for the bond being formed
+- `breaking_bond`: `{atom1, atom2}` for the bond being broken
+
+Each atom is either an explicit `index` (same convention as `Simulation.idx_start_from`) or a PDB selector. Do not mix the two styles on a single atom. PDB selection requires `reference_pdb_file` and `atom_name`, plus enough of `chain_id` / `residue_name` / `residue_number` to uniquely match one ATOM/HETATM record.
+
+Accepted atom-field aliases: `chain`/`chainID`, `resname`/`resn`, `resid`/`resseq`/`resi`, `name`/`atom`/`atomname`.
+
+### Forming and breaking (difference CV)
+
+```yaml
+plumed_config:
+  reference_pdb_file: cluster.pdb
+  forming_bond:
+    atom1:
+      residue_name: SAM
+      atom_name: CE
+    atom2:
+      chain_id: A
+      residue_name: DHB
+      residue_number: 20
+      atom_name: O3
+  breaking_bond:
+    atom1:
+      residue_name: SAM
+      atom_name: SD
+    atom2:
+      residue_name: SAM
+      atom_name: CE
+  lower_bound: -2
+  upper_bound: 2
+  dump_interval: 20
+```
+
+Main CV: `rc = d_forming - d_breaking` (PLUMED labels `d1`, `d0`, then `rc`).
+
+### Forming only / breaking only
+
+Omit the unused pair:
+
+```yaml
+plumed_config:
+  forming_bond:
+    atom1: {index: 12}
+    atom2: {index: 45}
+  lower_bound: 1.4
+  upper_bound: 3.5
+  dump_interval: 20
+```
+
+```yaml
+plumed_config:
+  breaking_bond:
+    atom1: {index: 12}
+    atom2: {index: 13}
+  lower_bound: 1.4
+  upper_bound: 3.5
+  dump_interval: 20
+```
+
+Optional `max_bond_length` adds an `UPPER_WALLS` restraint on the shorter of the two distances (difference mode) or on the single scanned distance. Descriptive `get_indices()` names are `forming_a`, `forming_b`, `breaking_a`, and `breaking_b`.
+
 ## SAMMT Generator
 
-`SAMMTConfigGenerator` is for SAM-dependent methyltransferase systems. Its main coordinate is:
+`SAMMTConfigGenerator` is a specialized `BondReactionConfigGenerator` for SAM-dependent methyltransferase systems. Its main coordinate is:
 
 ```text
 dd = d(CE, nucleophile) - d(SD, CE)
 ```
 
-Indices can come from a reference PDB:
+which is exactly the generic difference mode with breaking = SAM `SD–CE` and forming = `CE–nucleophile`. Because the system is assumed to contain a unique SAM and a unique substrate residue, the user only needs:
 
 ```yaml
 plumed_config:
@@ -87,7 +166,7 @@ plumed_config:
   nucleophile: "O2'"
 ```
 
-Or from explicit atom indices in the same convention as `Simulation.idx_start_from`:
+Or explicit atom indices in the same convention as `Simulation.idx_start_from`:
 
 ```yaml
 plumed_config:
@@ -96,7 +175,7 @@ plumed_config:
   index_nucleophile: 388
 ```
 
-The descriptive index names exposed by `get_indices()` are `sulphur`, `sulfur`, `methyl_carbon`, and `nucleophile`. Proton-transfer configs can refer to these names, for example `donor: nucleophile`.
+The descriptive index names exposed by `get_indices()` are `sulphur`, `sulfur`, `methyl_carbon`, and `nucleophile` (plus the generic `forming_*` / `breaking_*` aliases). Proton-transfer configs can refer to these names, for example `donor: nucleophile`.
 
 ## Proton Transfer
 
@@ -168,6 +247,8 @@ class MyConfigGenerator(PlumedConfigGenerator):
     def calc_main_rc(self):
         return self.system.get_distance(0, 1, mic=False)
 ```
+
+For bond-forming / bond-breaking chemistry, prefer subclassing `BondReactionConfigGenerator` and supplying resolved `forming_bond` / `breaking_bond` pairs (see `SAMMTConfigGenerator`).
 
 The base class constructor already records:
 
@@ -255,3 +336,9 @@ export PYTHONPATH=/path/to/Enerzymette:/path/to/Enerzyme:$PYTHONPATH
 ```
 
 Use the `enerzyme-dev` conda environment for smoke tests in this workspace.
+
+Run unit tests from the Enerzymette package root:
+
+```bash
+pytest tests/ -v
+```
