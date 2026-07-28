@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ase import Atoms
 from ase.units import kcal, mol
@@ -147,14 +147,17 @@ class SAMMTConfigGenerator(PlumedConfigGenerator):
                 f"{self.index_nucleophile + 1 - self.idx_start_from} NOPBC"
             ),
             "dsort: SORT ARG=d0,d1",
+            "dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO",
         ]
-        if self.max_bond_length is not None:
-            lines.append(
-                f"uwall: UPPER_WALLS ARG=dsort.1 AT={self.max_bond_length} "
-                f"KAPPA={1000 * kcal / mol}"
-            )
-        lines.append("dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO")
         return "dd", "\n".join(lines)
+
+    def define_additional_restraints(self) -> List[str]:
+        if self.max_bond_length is None:
+            return []
+        return [
+            f"uwall: UPPER_WALLS ARG=dsort.1 AT={self.max_bond_length} "
+            f"KAPPA={1000 * kcal / mol}"
+        ]
 
     def calc_main_rc(self) -> float:
         current_d0 = self.system.get_distance(

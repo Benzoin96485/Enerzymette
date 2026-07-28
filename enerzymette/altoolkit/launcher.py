@@ -4,7 +4,7 @@ from typing import Tuple, Optional, Dict, Callable, Literal, List
 import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
-from ..plumed_config_generator import get_plumed_patch
+from ..plumed_config_generator import get_plumed_patch, get_steered_method_name
 from ..scantoolkit.workflow import (
     build_enerzyme_simulate_cmd,
     run_elementary_reaction_scan,
@@ -826,12 +826,35 @@ class active_learning_launcher:
                 logger.info(f"Presimulation completed for {simulation_path} and skipped.")
             else:
                 presimulation_config = copy.deepcopy(simulation_config)
-                presimulation_config["Simulation"].pop("sampling", None)
-                presimulation_config["Simulation"]["task"] = "md"
                 presimulation_config["Simulation"]["integrate"]["n_step"] = (
                     self.n_presimulation_steps_per_iteration
                 )
                 presimulation_config["System"]["structure_file"] = entry["path"]
+                generator_cfg = (
+                    presimulation_config["Simulation"].get("plumed_config_generator")
+                    or {}
+                )
+                steered_method = get_steered_method_name(self.plumed_patch_key)
+                use_restrained_plumed = generator_cfg.get("method") in {
+                    steered_method,
+                    "standard_steered_md",
+                }
+                if use_restrained_plumed:
+                    # Equilibrate with additional restraints (e.g. UPPER_WALLS)
+                    # but without MOVINGRESTRAINT.
+                    presimulation_config["Simulation"]["task"] = "plumed"
+                    generator_cfg = dict(generator_cfg)
+                    generator_cfg["method"] = "standard_restrained_md"
+                    presimulation_config["Simulation"][
+                        "plumed_config_generator"
+                    ] = generator_cfg
+                    traj_path = os.path.join(simulation_path, "plumed.traj.xyz")
+                    with_plumed_patch = True
+                else:
+                    presimulation_config["Simulation"].pop("sampling", None)
+                    presimulation_config["Simulation"]["task"] = "md"
+                    traj_path = presimulation_trajectory_path
+                    with_plumed_patch = False
                 with open(presimulation_config_path, "w") as f:
                     yaml.dump(presimulation_config, f, default_flow_style=False)
                 subprocess.Popen(
@@ -839,12 +862,19 @@ class active_learning_launcher:
                         presimulation_config_path,
                         simulation_path,
                         simulation_model_config_path,
+                        with_plumed_patch=with_plumed_patch,
                     ),
                     stdout=sys.stdout,
                     stderr=sys.stderr,
                 ).wait()
-                if os.path.exists(presimulation_trajectory_path):
+                if os.path.exists(traj_path):
                     open(presimulation_completed_flag, "w").close()
+                    # Restrained plumed writes plumed.traj.xyz; move aside so
+                    # the subsequent steered MD can write a fresh trajectory.
+                    if with_plumed_patch and traj_path != presimulation_trajectory_path:
+                        if os.path.exists(presimulation_trajectory_path):
+                            os.remove(presimulation_trajectory_path)
+                        os.rename(traj_path, presimulation_trajectory_path)
             last_frame = ase.io.read(presimulation_trajectory_path, index=-1)
             ase.io.write(entry["path"], last_frame, format="extxyz")
             ase.io.write(initial_structure_path, last_frame, format="extxyz")
@@ -943,13 +973,10 @@ class active_learning_launcher:
 
         if os.path.exists(simulation_trajectory_path):
             open(simulation_completed_flag, "w").close()
-            if self.multi_system_mode:
-                last_frame = ase.io.read(simulation_trajectory_path, index=-1)
-                ase.io.write(entry["path"], last_frame, format="extxyz")
-                self._save_structure_pool()
-                logger.info(
-                    f"Iteration {i}: updated pool entry {pool_idx} from steered MD"
-                )
+            # In multi-system mode the pool is advanced by pre-simulation only
+            # (see _prepare_iteration_initial_structure), matching single-structure
+            # mode where the next round starts from the pre-sim end frame rather
+            # than the steered-MD end frame.
         self._persist_proton_transfer_state(i, simulation_path, simulation_config)
         logger.info(f"Simulation finished for {simulation_path}")
 

@@ -17,6 +17,7 @@ import ase.io
 from ._engine import (
     PlumedConfigGenerator,
     ReactionCoordinate,
+    generate_restrained_md,
     generate_scan_restraint,
     generate_steered_md,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "append_optional_proton_transfer",
     "build_proton_transfer_config",
     "ReactionCoordinate",
+    "generate_restrained_md",
     "generate_scan_restraint",
     "generate_steered_md",
     "get_config_generator_class",
