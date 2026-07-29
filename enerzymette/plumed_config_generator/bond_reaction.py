@@ -17,7 +17,7 @@ Atoms may be given as explicit indices or as PDB selectors; see
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from ase import Atoms
 from ase.units import kcal, mol
@@ -158,29 +158,14 @@ class BondReactionConfigGenerator(PlumedConfigGenerator):
 
         if self._mode == "difference":
             lines.append("dsort: SORT ARG=d0,d1")
-            if self.max_bond_length is not None:
-                lines.append(
-                    f"uwall: UPPER_WALLS ARG=dsort.1 AT={self.max_bond_length} "
-                    f"KAPPA={1000 * kcal / mol}"
-                )
             lines.append(f"{cv_name}: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO")
         elif self._mode == "forming":
-            if self.max_bond_length is not None:
-                lines.append(
-                    f"uwall: UPPER_WALLS ARG=d1 AT={self.max_bond_length} "
-                    f"KAPPA={1000 * kcal / mol}"
-                )
             if cv_name != "d1":
                 lines.append(f"{cv_name}: COMBINE ARG=d1 COEFFICIENTS=1 PERIODIC=NO")
             else:
                 # CV is already named d1.
                 pass
         else:  # breaking
-            if self.max_bond_length is not None:
-                lines.append(
-                    f"uwall: UPPER_WALLS ARG=d0 AT={self.max_bond_length} "
-                    f"KAPPA={1000 * kcal / mol}"
-                )
             if cv_name != "d0":
                 lines.append(f"{cv_name}: COMBINE ARG=d0 COEFFICIENTS=1 PERIODIC=NO")
 
@@ -191,6 +176,20 @@ class BondReactionConfigGenerator(PlumedConfigGenerator):
         if self._mode == "breaking" and cv_name == "d0":
             return "d0", "\n".join(lines)
         return cv_name, "\n".join(lines)
+
+    def define_additional_restraints(self) -> List[str]:
+        if self.max_bond_length is None:
+            return []
+        if self._mode == "difference":
+            arg = "dsort.1"
+        elif self._mode == "forming":
+            arg = "d1"
+        else:
+            arg = "d0"
+        return [
+            f"uwall: UPPER_WALLS ARG={arg} AT={self.max_bond_length} "
+            f"KAPPA={1000 * kcal / mol}"
+        ]
 
     def calc_main_rc(self) -> float:
         if self._mode == "difference":

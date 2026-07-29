@@ -4,8 +4,8 @@ Enerzymette builds PLUMED input through class-based generator plugins. A plugin 
 
 The design separates four layers:
 
-- `PlumedConfigGenerator` in `_engine.py`: system-independent workflow methods for steered MD, naive steered MD, scan restraints, and PLUMED unit preamble.
-- `BondReactionConfigGenerator` in `bond_reaction.py`: generic forming / breaking / difference bond reaction coordinates, with atom discovery via `atom_selection.py`.
+- `PlumedConfigGenerator` in `_engine.py`: system-independent workflow methods for steered MD, restrained MD, naive steered MD, scan restraints, and PLUMED unit preamble.
+- `BondReactionConfigGenerator` in `bond_reaction.py`: generic forming / breaking / difference bond reaction coordinates, optional additional restraints (e.g. `UPPER_WALLS`), with atom discovery via `atom_selection.py`.
 - Chemistry-specific generator subclasses such as `SAMMTConfigGenerator` in `sammt.py`: specialized presets that fill in bond pairs from domain conventions.
 - Proton-transfer plugins in `proton_transfer.py`, such as `local_opes`: optional auxiliary CV/bias builders that can be inserted into any generator through `proton_transfer`.
 
@@ -48,7 +48,8 @@ System:
 
 Enerzyme passes these values to `SAMMTConfigGenerator(system, ...)`, then calls `standard_steered_md(...)`. Supported base methods are:
 
-- `standard_steered_md`: starts from the current main reaction coordinate and runs one round trip across `[lower_bound, upper_bound]`.
+- `standard_steered_md`: starts from the current main reaction coordinate and runs one round trip across `[lower_bound, upper_bound]`. Includes any additional restraints from `define_additional_restraints()`.
+- `standard_restrained_md`: same main CV and additional restraints, but without `MOVINGRESTRAINT`. Used for equilibration / active-learning pre-simulation so walls stay active without steering.
 - `naive_steered_md`: first pulls the coordinate to the nearest bound over `warmup_steps`, then pulls to the opposite bound.
 - `scan`: applies a static PLUMED `RESTRAINT` at `target_value`; Enerzyme supplies `target_value` for each `task: plumed_scan` point. Scan configs do not insert proton-transfer plugins, even if `proton_transfer` is present in `plumed_config`.
 
@@ -239,6 +240,10 @@ class MyConfigGenerator(PlumedConfigGenerator):
     def define_main_rc(self):
         return "rc", "rc: DISTANCE ATOMS=1,2 NOPBC"
 
+    def define_additional_restraints(self):
+        # Optional walls / auxiliary restraints shared by steered and restrained MD.
+        return []
+
     def calc_main_rc(self):
         return self.system.get_distance(0, 1, mic=False)
 ```
@@ -320,7 +325,7 @@ proton_transfer:
 
 `resolve_scan_endpoints()` instantiates the registered generator and uses `build_reaction_coordinate()` to compute the current coordinate. It chooses scan endpoints from an explicit target value, a target structure, or the farther configured bound.
 
-`altoolkit` and `scantoolkit` emit class-based scan configs automatically when a PLUMED plugin key is supplied. Active learning also injects per-structure `proton_transfer.scope_file`, `proton_transfer.state_file`, `proton_transfer.restart`, and `proton_transfer.topology_mol_file` when proton transfer is enabled in the base YAML.
+`altoolkit` and `scantoolkit` emit class-based scan configs automatically when a PLUMED plugin key is supplied. Active learning also injects per-structure `proton_transfer.scope_file`, `proton_transfer.state_file`, `proton_transfer.restart`, and `proton_transfer.topology_mol_file` when proton transfer is enabled in the base YAML. When the simulation uses `standard_steered_md` and pre-simulation steps are enabled, altoolkit switches the pre-simulation method to `standard_restrained_md` so additional restraints (e.g. `UPPER_WALLS`) remain active without steering.
 
 ## Debugging
 

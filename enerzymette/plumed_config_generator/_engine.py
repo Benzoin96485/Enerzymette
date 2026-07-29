@@ -90,11 +90,23 @@ class PlumedConfigGenerator(ABC):
 
     @abstractmethod
     def define_main_rc(self) -> Tuple[str, str]:
-        """Return the main CV name and its PLUMED definition lines."""
+        """Return the main CV name and its PLUMED definition lines.
+
+        Do not include auxiliary walls or other non-CV restraints here; put
+        those in :meth:`define_additional_restraints`.
+        """
 
     @abstractmethod
     def calc_main_rc(self) -> float:
         """Calculate the current main CV value from ``self.system``."""
+
+    def define_additional_restraints(self) -> List[str]:
+        """Return optional auxiliary restraint lines (e.g. ``UPPER_WALLS``).
+
+        These are appended after the main CV definition and are included in
+        both steered and restrained MD configs.
+        """
+        return []
 
     def build_reaction_coordinate(
         self,
@@ -109,6 +121,9 @@ class PlumedConfigGenerator(ABC):
         cv_name, definition = self.define_main_rc()
         lines = list(self.preamble)
         lines.extend(line for line in definition.splitlines() if line.strip())
+        lines.extend(
+            line for line in self.define_additional_restraints() if line and line.strip()
+        )
         return ReactionCoordinate(
             preamble=lines,
             cv_name=cv_name,
@@ -155,6 +170,34 @@ class PlumedConfigGenerator(ABC):
             **kwargs,
         )
         plumed_config = generate_steered_md(rc, integrate_config or self.integrate_config)
+        return self._append_optional_proton_transfer(
+            plumed_config,
+            dump_interval=dump_interval,
+            integrate_config=integrate_config,
+            **kwargs,
+        )
+
+    def standard_restrained_md(
+        self,
+        *,
+        integrate_config: Optional[dict] = None,
+        lower_bound: float,
+        upper_bound: float,
+        dump_interval: int,
+        **kwargs,
+    ) -> List[str]:
+        """Build a PLUMED config with main CV + additional restraints, no steering.
+
+        Parallel to :meth:`standard_steered_md`, but without ``MOVINGRESTRAINT``.
+        Intended for equilibration / pre-simulation while keeping walls active.
+        """
+        rc = self.build_reaction_coordinate(
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            dump_interval=dump_interval,
+            **kwargs,
+        )
+        plumed_config = generate_restrained_md(rc)
         return self._append_optional_proton_transfer(
             plumed_config,
             dump_interval=dump_interval,
@@ -221,6 +264,17 @@ class PlumedConfigGenerator(ABC):
 
 
 
+def _print_args_without_moving_restraint(rc: ReactionCoordinate) -> str:
+    if rc.print_args is None:
+        return rc.cv_name
+    parts = [
+        part.strip()
+        for part in rc.print_args.split(",")
+        if part.strip() and not part.strip().startswith("mr")
+    ]
+    return ",".join(parts) if parts else rc.cv_name
+
+
 def generate_steered_md(rc: ReactionCoordinate, integrate_config: dict) -> List[str]:
     plumed_config = list(rc.preamble)
 
@@ -255,6 +309,15 @@ def generate_steered_md(rc: ReactionCoordinate, integrate_config: dict) -> List[
     plumed_config.append(" ".join(moving_restraint_component))
 
     print_args = rc.print_args if rc.print_args is not None else f"{rc.cv_name},mr.*"
+    plumed_config.append(f"PRINT ARG={print_args} STRIDE={rc.dump_interval}")
+    plumed_config.append(f"FLUSH STRIDE={rc.dump_interval}")
+    return plumed_config
+
+
+def generate_restrained_md(rc: ReactionCoordinate) -> List[str]:
+    """Emit main CV + additional restraints already in ``rc.preamble``, without steering."""
+    plumed_config = list(rc.preamble)
+    print_args = _print_args_without_moving_restraint(rc)
     plumed_config.append(f"PRINT ARG={print_args} STRIDE={rc.dump_interval}")
     plumed_config.append(f"FLUSH STRIDE={rc.dump_interval}")
     return plumed_config
