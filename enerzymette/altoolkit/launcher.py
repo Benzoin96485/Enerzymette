@@ -1128,8 +1128,12 @@ class active_learning_launcher:
         self._merge_dataset(i)
         training_set_config = copy.deepcopy(self.pretrain_config["Datahub"])
         training_set_config["data_path"] = training_set_path
+        training_set_config.pop("transforms", None)
+        training_set_config.pop("global_transforms", None)
         validation_set_config = copy.deepcopy(self.pretrain_config["Datahub"])
         validation_set_config["data_path"] = validation_set_path
+        validation_set_config.pop("transforms", None)
+        validation_set_config.pop("global_transforms", None)
         new_trainer_config = {
             "Splitter": {
                 "method": "random",
