@@ -25,30 +25,46 @@ def find_interior_energy_maxima(energies: List[float]) -> List[int]:
 
 
 def find_ci_index(energies: List[float]) -> int:
-    """CI frame index: global energy maximum, with refinement when that maximum is at 0."""
-    ci_index = -1
-    max_energy = float("-inf")
+    """CI / TS frame index on a scan energy profile.
+
+    Prefer the highest *interior* local maximum whenever any exist. Endpoints are
+    only used when the path has no interior extrema (monotonic rise/fall), in
+    which case the global maximum is an endpoint.
+    """
+    interior_maxima = find_interior_energy_maxima(energies)
+    if interior_maxima:
+        return max(interior_maxima, key=lambda i: energies[i])
+
+    ci_index = 0
+    max_energy = energies[0] if energies else float("-inf")
     for i, energy in enumerate(energies):
         if energy > max_energy:
             max_energy = energy
             ci_index = i
-    if ci_index != 0:
-        return ci_index
-    interior_maxima = find_interior_energy_maxima(energies)
-    if not interior_maxima:
-        return 0
-    return max(interior_maxima, key=lambda i: energies[i])
+    return ci_index
 
 
 def find_product_index(
     intermediate_indices: List[int],
     ci_index: int,
     n_images: int,
+    energies: Optional[List[float]] = None,
 ) -> int:
-    """Product frame: rightmost interior minimum strictly to the right of the CI."""
+    """Product frame after the CI.
+
+    Prefer the rightmost interior minimum strictly right of the CI. If none
+    exist, use the right endpoint when its energy is lower than the left
+    endpoint (``E[-1] < E[0]``); otherwise still fall back to the last frame.
+    """
     product_side = [i for i in intermediate_indices if i > ci_index]
     if product_side:
         return max(product_side)
+    if (
+        energies is not None
+        and n_images >= 2
+        and energies[-1] < energies[0]
+    ):
+        return n_images - 1
     return n_images - 1
 
 
@@ -76,7 +92,9 @@ def analyze_scan_path(energies: List[float]) -> ScanPathAnalysis:
     intermediate_indices = find_intermediate_indices(energies)
     ci_index = find_ci_index(energies)
     n_images = len(energies)
-    product_index = find_product_index(intermediate_indices, ci_index, n_images)
+    product_index = find_product_index(
+        intermediate_indices, ci_index, n_images, energies=energies
+    )
     terminate_chain = ci_index == 0
     chain_reactant_index = None
     if not terminate_chain and intermediate_indices:

@@ -111,6 +111,7 @@ class EnerzymeScanLauncher:
                 config_path=config_path,
                 target_value=kwargs.get("target_value"),
                 target_structure_path=kwargs.get("target_structure_path"),
+                traj_file=kwargs.get("traj_file"),
             )
 
         def build_simulate_cmd(config_path, output_path, with_plumed_patch):
@@ -152,6 +153,7 @@ class EnerzymeScanLauncher:
         config_path: str,
         target_value: Optional[float]=None,
         target_structure_path: Optional[str]=None,
+        traj_file: Optional[str]=None,
     ):
         idx_start_from = 0 if self.reference_type == "scan_config" else 1
         write_standalone_scan_config(
@@ -168,4 +170,5 @@ class EnerzymeScanLauncher:
             n_steps=self.n_steps,
             target_value=target_value,
             target_structure_path=target_structure_path,
+            traj_file=traj_file,
         )
