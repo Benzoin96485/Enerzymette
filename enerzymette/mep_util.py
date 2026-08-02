@@ -52,20 +52,23 @@ def find_product_index(
 ) -> int:
     """Product frame after the CI.
 
-    Prefer the rightmost interior minimum strictly right of the CI. If none
-    exist, use the right endpoint when its energy is lower than the left
-    endpoint (``E[-1] < E[0]``); otherwise still fall back to the last frame.
+    Candidates are interior minima strictly right of the CI, plus the right
+    endpoint when ``E[-1] <= E[-2]`` (so a descending last step always selects
+    the endpoint as the rightmost candidate). The product is the rightmost
+    candidate; if none qualify, fall back to the last frame.
     """
-    product_side = [i for i in intermediate_indices if i > ci_index]
-    if product_side:
-        return max(product_side)
+    candidates = [i for i in intermediate_indices if i > ci_index]
+    last = n_images - 1
     if (
         energies is not None
         and n_images >= 2
-        and energies[-1] < energies[0]
+        and last > ci_index
+        and energies[-1] <= energies[-2]
     ):
-        return n_images - 1
-    return n_images - 1
+        candidates.append(last)
+    if candidates:
+        return max(candidates)
+    return last
 
 
 def find_chain_reactant_index(

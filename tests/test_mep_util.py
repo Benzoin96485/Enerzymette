@@ -11,23 +11,38 @@ from enerzymette.mep_util import (
 
 def test_find_product_index_uses_rightmost_product_side_minimum():
     # CI at 2; product-side minima at 4 and 6 → product is rightmost (6)
+    # Endpoint rising (E[-1] > E[-2]) so it is not a candidate.
+    energies = [0.0, 0.5, 3.0, 2.0, 1.0, 1.5, 0.5, 1.0]
     intermediate_indices = [1, 4, 6]
-    assert find_product_index(intermediate_indices, ci_index=2, n_images=8) == 6
-
-
-def test_find_product_index_falls_back_to_last_frame():
-    assert find_product_index([1], ci_index=3, n_images=5) == 4
-
-
-def test_find_product_index_uses_right_endpoint_when_lower_than_left():
-    energies = [1.0, 2.0, 3.0, 2.5, 0.5]
     assert (
-        find_product_index([], ci_index=2, n_images=5, energies=energies) == 4
+        find_product_index(
+            intermediate_indices, ci_index=2, n_images=8, energies=energies
+        )
+        == 6
+    )
+
+
+def test_find_product_index_falls_back_to_last_frame_when_no_candidates():
+    # No post-CI minima and rising endpoint → fallback to last frame.
+    energies = [0.0, 1.0, 2.0, 3.0, 4.0]
+    assert find_product_index([], ci_index=2, n_images=5, energies=energies) == 4
+
+
+def test_find_product_index_endpoint_wins_when_last_step_descends():
+    # Interior min at 4, but E[-1] < E[-2] → rightmost candidate is the endpoint.
+    energies = [0.0, 1.0, 3.0, 2.0, 1.0, 0.5]
+    intermediate_indices = [4]
+    assert (
+        find_product_index(
+            intermediate_indices, ci_index=2, n_images=6, energies=energies
+        )
+        == 5
     )
 
 
 def test_analyze_scan_path_product_side_only_is_converged_elementary_step():
     # Rising to CI at 3, then falling into a product well at 5 (not the last frame).
+    # E[-1] > E[-2], so endpoint is not a candidate.
     energies = [0.0, 1.0, 2.0, 3.0, 1.5, 0.5, 1.0]
     path = analyze_scan_path(energies)
     assert path.ci_index == 3
@@ -67,7 +82,7 @@ def test_find_ci_prefers_highest_interior_maximum_over_endpoint():
     assert find_ci_index(energies) == 19
     path = analyze_scan_path(energies)
     assert path.ci_index == 19
-    assert path.product_index == 21
+    assert path.product_index == 21  # E[-1] > E[-2], so endpoint excluded
     assert path.chain_reactant_index == 16
 
 
