@@ -542,14 +542,18 @@ def run_scan_chain(
                 current_product_name = find_new_name(product_names)
                 reactant_names.append(current_reactant_name)
                 product_names.append(current_product_name)
-            elif intermediate_indices:
-                logger.info(
-                    f"{log_prefix}No interior minimum left of CI at {ci_index}; "
-                    f"stopping after {reaction_name}"
-                )
-                break
             else:
-                logger.info(f"{log_prefix}Scan converged for reaction {reaction_name}")
+                # No reactant-side interior minimum to chain from. Product-side
+                # minima (if any) already define the product well via product_index;
+                # treat the elementary scan as converged and keep the CI as RDTS.
+                if intermediate_indices:
+                    logger.info(
+                        f"{log_prefix}Scan converged for reaction {reaction_name} "
+                        f"(product-side minima at {intermediate_indices}; CI at {ci_index}; "
+                        "no reactant-side minimum to chain)"
+                    )
+                else:
+                    logger.info(f"{log_prefix}Scan converged for reaction {reaction_name}")
                 if write_results:
                     write_rate_determining_ts_results(
                         output_path,

@@ -45,10 +45,10 @@ def find_product_index(
     ci_index: int,
     n_images: int,
 ) -> int:
-    """Product frame: first interior minimum strictly to the right of the CI."""
+    """Product frame: rightmost interior minimum strictly to the right of the CI."""
     product_side = [i for i in intermediate_indices if i > ci_index]
     if product_side:
-        return min(product_side)
+        return max(product_side)
     return n_images - 1
 
 
@@ -97,8 +97,8 @@ def _find_rate_determining_step(intermediate_indices, energies, ci_index) -> Tup
         if intermediate_index < ci_index:
             new_reactant_index = intermediate_index
         elif intermediate_index > ci_index:
+            # Keep updating so the rightmost product-side minimum wins.
             new_product_index = intermediate_index
-            break
     return new_reactant_index, new_product_index
 
 
