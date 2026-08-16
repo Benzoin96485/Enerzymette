@@ -80,7 +80,7 @@ Then run the ORCA job as usual.
 
 ## Enerzyme Scan Launcher
 
-Automates NNP-driven flexible bond scans. For each elementary reaction it calls `enerzyme simulate` to optimize the reactant, scan a bond-distance CV, optimize the product, and analyze the energy profile. System settings (charge, spin, frozen atoms, scan bond) are read from a TeraChem reference input (`-q`). If an intermediate minimum appears left of the transition state, the launcher chains another scan from that structure. Final results go to `rate_determining_ts/` (TS geometry and `results.json`).
+Automates NNP-driven flexible bond scans. For each elementary reaction it calls `enerzyme simulate` to optimize the reactant, scan a bond-distance CV, optimize the product, and analyze the energy profile. System settings (charge, spin, frozen atoms, scan bond) are read from a TeraChem reference input (`-q`). If an intermediate minimum appears left of the transition state, the launcher chains another scan from that structure. The TS is the highest interior energy maximum when any exist; endpoints are only treated as the TS on monotonic paths. Product seeding takes the rightmost candidate among post-CI interior minima and the right endpoint when `E[-1] <= E[-2]`. Final results go to `rate_determining_ts/` (TS geometry and `results.json`).
 
 Usage:
 ```

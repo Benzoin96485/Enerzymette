@@ -170,7 +170,13 @@ def write_standalone_scan_config(
     n_steps: int = 25,
     target_value: Optional[float] = None,
     target_structure_path: Optional[str] = None,
+    traj_file: Optional[str] = None,
 ) -> None:
+    optimize: Dict[str, Any] = {
+        "optimizer": "LBFGS",
+    }
+    if traj_file is not None:
+        optimize["traj_file"] = traj_file
     base_config: Dict[str, Any] = {
         "Simulation": {
             "environment": "ase",
@@ -184,9 +190,7 @@ def write_standalone_scan_config(
                     "indices": constraint_freeze_xyz,
                 }
             },
-            "optimize": {
-                "optimizer": "LBFGS",
-            },
+            "optimize": optimize,
         },
         "System": {
             "structure_file": initial_structure_path,
@@ -232,6 +236,7 @@ def write_base_scan_task_config(
     n_steps: int = 25,
     scan_target_value: Optional[float] = None,
     scan_target_structure_path: Optional[str] = None,
+    traj_file: Optional[str] = None,
     yaml_flow_style: bool = False,
 ) -> None:
     config = copy.deepcopy(base_config)
@@ -244,6 +249,8 @@ def write_base_scan_task_config(
         config["Simulation"].pop("integrate", None)
         if "optimize" not in config["Simulation"]:
             config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
+        if traj_file is not None:
+            config["Simulation"]["optimize"]["traj_file"] = traj_file
     elif task == "plumed_scan":
         if plumed_patch_key is None:
             raise ValueError("plumed_scan task requires plumed_patch_key")
@@ -354,7 +361,12 @@ def run_elementary_reaction_scan(
     logger.info(f"Initial reactant written to {init_reactant_path}")
 
     reactant_opt_config_path = os.path.join(elementary_reaction_path, "reactant_opt.yaml")
-    write_config("opt", init_reactant_path, reactant_opt_config_path)
+    write_config(
+        "opt",
+        init_reactant_path,
+        reactant_opt_config_path,
+        traj_file="reactant_traj-opt.xyz",
+    )
     _run_simulate(
         build_simulate_cmd(reactant_opt_config_path, elementary_reaction_path, False),
         redirect_stdio=redirect_stdio,
@@ -397,7 +409,12 @@ def run_elementary_reaction_scan(
     )
 
     product_opt_config_path = os.path.join(elementary_reaction_path, "product_opt.yaml")
-    write_config("opt", scan_product_path, product_opt_config_path)
+    write_config(
+        "opt",
+        scan_product_path,
+        product_opt_config_path,
+        traj_file="product_traj-opt.xyz",
+    )
     _run_simulate(
         build_simulate_cmd(product_opt_config_path, elementary_reaction_path, False),
         redirect_stdio=redirect_stdio,
@@ -542,14 +559,18 @@ def run_scan_chain(
                 current_product_name = find_new_name(product_names)
                 reactant_names.append(current_reactant_name)
                 product_names.append(current_product_name)
-            elif intermediate_indices:
-                logger.info(
-                    f"{log_prefix}No interior minimum left of CI at {ci_index}; "
-                    f"stopping after {reaction_name}"
-                )
-                break
             else:
-                logger.info(f"{log_prefix}Scan converged for reaction {reaction_name}")
+                # No reactant-side interior minimum to chain from. Product-side
+                # minima (if any) already define the product well via product_index;
+                # treat the elementary scan as converged and keep the CI as RDTS.
+                if intermediate_indices:
+                    logger.info(
+                        f"{log_prefix}Scan converged for reaction {reaction_name} "
+                        f"(product-side minima at {intermediate_indices}; CI at {ci_index}; "
+                        "no reactant-side minimum to chain)"
+                    )
+                else:
+                    logger.info(f"{log_prefix}Scan converged for reaction {reaction_name}")
                 if write_results:
                     write_rate_determining_ts_results(
                         output_path,
