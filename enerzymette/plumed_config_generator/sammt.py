@@ -126,11 +126,19 @@ class SAMMTConfigGenerator(BondReactionConfigGenerator):
         max_bond_length: Optional[float] = 3.0,
         forming_bond=None,
         breaking_bond=None,
+        forming_bonds=None,
+        breaking_bonds=None,
         **kwargs,
     ) -> None:
-        if forming_bond is not None or breaking_bond is not None:
+        if (
+            forming_bond is not None
+            or breaking_bond is not None
+            or forming_bonds is not None
+            or breaking_bonds is not None
+        ):
             raise ValueError(
-                "SAMMTConfigGenerator does not accept forming_bond/breaking_bond; "
+                "SAMMTConfigGenerator does not accept forming_bond/breaking_bond "
+                "or forming_bonds/breaking_bonds; "
                 "use substrate/nucleophile or explicit SAMMT indices instead"
             )
 
