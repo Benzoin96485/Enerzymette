@@ -9,7 +9,7 @@ must not be mixed on the same atom.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -379,3 +379,45 @@ def coerce_bond_pair(
         value.validate(label=label)
         return value
     return bond_pair_from_mapping(value, label=label)
+
+
+BondPairLike = Union[BondPairSpec, Mapping[str, Any]]
+
+
+def coerce_bond_pairs(
+    value: Optional[Union[BondPairLike, Sequence[BondPairLike]]],
+    *,
+    label: str,
+) -> List[BondPairSpec]:
+    """Accept one pair, a sequence of pairs, or ``None``.
+
+    ``None`` and an empty sequence both yield ``[]``.  A single
+    :class:`BondPairSpec` or YAML mapping is wrapped as a one-element list.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        raise TypeError(
+            f"{label}: expected a bond pair mapping, BondPairSpec, or sequence; "
+            f"got {type(value).__name__}"
+        )
+    if isinstance(value, BondPairSpec):
+        value.validate(label=label)
+        return [value]
+    if isinstance(value, Mapping):
+        pair = bond_pair_from_mapping(value, label=label)
+        if pair is None:
+            return []
+        return [pair]
+    if isinstance(value, (list, tuple)):
+        pairs: List[BondPairSpec] = []
+        for index, item in enumerate(value):
+            pair = coerce_bond_pair(item, label=f"{label}[{index}]")
+            if pair is None:
+                raise ValueError(f"{label}[{index}]: bond pair cannot be None")
+            pairs.append(pair)
+        return pairs
+    raise TypeError(
+        f"{label}: expected a bond pair mapping, BondPairSpec, or sequence; "
+        f"got {type(value).__name__}"
+    )

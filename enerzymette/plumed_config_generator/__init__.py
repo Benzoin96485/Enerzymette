@@ -100,9 +100,10 @@ PLUMED_CV_PLUGINS: Dict[str, PlumedCvPluginSpec] = {
         module_name=".bond_reaction",
         class_name="BondReactionConfigGenerator",
         description=(
-            "Generic forming/breaking bond coordinate: forming only, breaking "
-            "only, or rc = d_forming − d_breaking; atoms from PDB selectors or "
-            "explicit indices."
+            "Generic forming/breaking bond coordinate: one or more forming "
+            "and/or breaking pairs; forming only, breaking only, or "
+            "rc = sum(d_forming) − sum(d_breaking); atoms from PDB selectors "
+            "or explicit indices."
         ),
     ),
     "sammt": PlumedCvPluginSpec(
