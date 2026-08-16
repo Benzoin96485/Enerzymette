@@ -652,6 +652,7 @@ class active_learning_launcher:
                 n_steps=self.n_initial_scan_steps,
                 scan_target_value=kwargs.get("target_value"),
                 scan_target_structure_path=kwargs.get("target_structure_path"),
+                traj_file=kwargs.get("traj_file"),
                 yaml_flow_style=False,
             )
 

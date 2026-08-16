@@ -25,31 +25,50 @@ def find_interior_energy_maxima(energies: List[float]) -> List[int]:
 
 
 def find_ci_index(energies: List[float]) -> int:
-    """CI frame index: global energy maximum, with refinement when that maximum is at 0."""
-    ci_index = -1
-    max_energy = float("-inf")
+    """CI / TS frame index on a scan energy profile.
+
+    Prefer the highest *interior* local maximum whenever any exist. Endpoints are
+    only used when the path has no interior extrema (monotonic rise/fall), in
+    which case the global maximum is an endpoint.
+    """
+    interior_maxima = find_interior_energy_maxima(energies)
+    if interior_maxima:
+        return max(interior_maxima, key=lambda i: energies[i])
+
+    ci_index = 0
+    max_energy = energies[0] if energies else float("-inf")
     for i, energy in enumerate(energies):
         if energy > max_energy:
             max_energy = energy
             ci_index = i
-    if ci_index != 0:
-        return ci_index
-    interior_maxima = find_interior_energy_maxima(energies)
-    if not interior_maxima:
-        return 0
-    return max(interior_maxima, key=lambda i: energies[i])
+    return ci_index
 
 
 def find_product_index(
     intermediate_indices: List[int],
     ci_index: int,
     n_images: int,
+    energies: Optional[List[float]] = None,
 ) -> int:
-    """Product frame: first interior minimum strictly to the right of the CI."""
-    product_side = [i for i in intermediate_indices if i > ci_index]
-    if product_side:
-        return min(product_side)
-    return n_images - 1
+    """Product frame after the CI.
+
+    Candidates are interior minima strictly right of the CI, plus the right
+    endpoint when ``E[-1] <= E[-2]`` (so a descending last step always selects
+    the endpoint as the rightmost candidate). The product is the rightmost
+    candidate; if none qualify, fall back to the last frame.
+    """
+    candidates = [i for i in intermediate_indices if i > ci_index]
+    last = n_images - 1
+    if (
+        energies is not None
+        and n_images >= 2
+        and last > ci_index
+        and energies[-1] <= energies[-2]
+    ):
+        candidates.append(last)
+    if candidates:
+        return max(candidates)
+    return last
 
 
 def find_chain_reactant_index(
@@ -76,7 +95,9 @@ def analyze_scan_path(energies: List[float]) -> ScanPathAnalysis:
     intermediate_indices = find_intermediate_indices(energies)
     ci_index = find_ci_index(energies)
     n_images = len(energies)
-    product_index = find_product_index(intermediate_indices, ci_index, n_images)
+    product_index = find_product_index(
+        intermediate_indices, ci_index, n_images, energies=energies
+    )
     terminate_chain = ci_index == 0
     chain_reactant_index = None
     if not terminate_chain and intermediate_indices:
@@ -97,8 +118,8 @@ def _find_rate_determining_step(intermediate_indices, energies, ci_index) -> Tup
         if intermediate_index < ci_index:
             new_reactant_index = intermediate_index
         elif intermediate_index > ci_index:
+            # Keep updating so the rightmost product-side minimum wins.
             new_product_index = intermediate_index
-            break
     return new_reactant_index, new_product_index
 
 
