@@ -32,6 +32,7 @@ class EnerzymeNEBLauncher:
         min_spring_constant: float=0.01,
         max_spring_constant: float=0.1,
         coordsys: Literal["cartesian", "redundant"]="redundant",
+        sidpp_hypersearch: bool=True,
     ) -> None:
         """
         Params
@@ -73,6 +74,8 @@ class EnerzymeNEBLauncher:
             The ORCA NEB optimization method.
         max_restart_attempts: int
             The maximum number of restart attempts for one NEB calculation. If the NEB does not converge after the maximum number of restart attempts, the reaction will be backtracked to the previous reaction and deleted.
+        sidpp_hypersearch: bool
+            ORCA SIDPP_HyperSearch: check initial-path connectivity and hypersearch S-IDPP settings. True by default.
         """
         # check if orca is available
         self.orca_exe = os.environ.get("ORCA_PATH", None)
@@ -119,6 +122,7 @@ class EnerzymeNEBLauncher:
         self.max_restart_attempts = max_restart_attempts
         self.min_spring_constant = min_spring_constant
         self.max_spring_constant = max_spring_constant
+        self.sidpp_hypersearch = sidpp_hypersearch
 
     def copy_local_minima(self, reactant_name: str, product_name: str):
         '''
@@ -497,6 +501,7 @@ class EnerzymeNEBLauncher:
             min_spring_constant=self.min_spring_constant,
             max_spring_constant=self.max_spring_constant,
             idx_start_from=self.idx_start_from,
+            sidpp_hypersearch=self.sidpp_hypersearch,
         )
 
     def launch_elementary_reaction(self, 

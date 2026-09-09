@@ -100,6 +100,7 @@ def write_orca_neb_in(
     min_spring_constant: float=0.01,
     max_spring_constant: float=0.1,
     idx_start_from: int=1,
+    sidpp_hypersearch: bool=True,
 ):
     if n_images < 3:
         raise ValueError("n_images must be greater than 2")
@@ -122,6 +123,7 @@ PreOpt {"true" if pre_opt else "false"}
 {"" if use_ts else "# "}TS "ts.xyz"
 SpringConst {min_spring_constant}
 SpringConst2 {max_spring_constant}
+SIDPP_HyperSearch {"true" if sidpp_hypersearch else "false"}
 end
 
 """

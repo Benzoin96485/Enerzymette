@@ -85,10 +85,13 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
             f"Valid options: {', '.join(index_type_map)}"
         )
     constraint_freeze_xyz = get_indices(reference_pdb, 0, freeze_index_types)
+    extra_freeze = [int(i) for i in (data.get("freeze_atom_indices") or [])]
     logger.info(
         f"Freeze indices from {freeze_index_types} on {reference_pdb}: "
         f"{len(constraint_freeze_xyz)} atoms"
     )
+    if extra_freeze:
+        logger.info(f"Extra freeze atom indices: {extra_freeze}")
 
     constraint_scan_section = data.get("constraint_scan")
     if not isinstance(constraint_scan_section, dict):
@@ -114,6 +117,7 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
         },
         "constraint_freeze": {
             "xyz": constraint_freeze_xyz,
+            "extra_xyz": extra_freeze,
         },
         "constraint_scan": {
             "bond": {
