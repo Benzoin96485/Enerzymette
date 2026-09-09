@@ -9,6 +9,7 @@ from enerzymette.plumed_config_generator.atom_selection import (
     BondPairSpec,
     atom_spec_from_mapping,
     bond_pair_from_mapping,
+    coerce_bond_pairs,
     parse_pdb_atoms,
     resolve_atom_index,
     resolve_bond_pair_indices,
@@ -135,6 +136,25 @@ def test_explicit_index_bounds_and_bond_pair():
         )
     pair = BondPairSpec(AtomSpec(index=1), AtomSpec(index=2))
     assert resolve_bond_pair_indices(pair, idx_start_from=1, n_atoms=3) == (1, 2)
+
+
+def test_coerce_bond_pairs_accepts_none_one_or_list():
+    assert coerce_bond_pairs(None, label="forming_bonds") == []
+    assert coerce_bond_pairs([], label="forming_bonds") == []
+    single = {"atom1": {"index": 1}, "atom2": {"index": 2}}
+    wrapped = coerce_bond_pairs(single, label="forming_bonds")
+    assert len(wrapped) == 1
+    assert wrapped[0].atom1.index == 1
+    listed = coerce_bond_pairs(
+        [
+            {"atom1": {"index": 1}, "atom2": {"index": 2}},
+            BondPairSpec(AtomSpec(index=3), AtomSpec(index=4)),
+        ],
+        label="forming_bonds",
+    )
+    assert [pair.atom1.index for pair in listed] == [1, 3]
+    with pytest.raises(TypeError, match="expected a bond pair"):
+        coerce_bond_pairs("not-a-pair", label="forming_bonds")
 
 
 def test_pdb_selection_requires_reference_file():

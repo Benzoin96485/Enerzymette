@@ -86,12 +86,16 @@ CLI plugin keys (`enerzymette enerzyme_scan -pp ...`, active learning `-pp ...`)
 
 ## Bond Reaction Generator
 
-`BondReactionConfigGenerator` is the generic middle layer for reactions that can be described as bond forming, bond breaking, or both. Provide one or both of:
+`BondReactionConfigGenerator` is the generic middle layer for reactions that can be described as bond forming, bond breaking, or both (including concerted multi-bond reactions). Provide one or more of:
 
-- `forming_bond`: `{atom1, atom2}` for the bond being formed
-- `breaking_bond`: `{atom1, atom2}` for the bond being broken
+- `forming_bond`: `{atom1, atom2}` for a single bond being formed
+- `breaking_bond`: `{atom1, atom2}` for a single bond being broken
+- `forming_bonds`: a list of `{atom1, atom2}` pairs (concerted forming)
+- `breaking_bonds`: a list of `{atom1, atom2}` pairs (concerted breaking)
 
-Each atom is either an explicit `index` (same convention as `Simulation.idx_start_from`) or a PDB selector. Do not mix the two styles on a single atom. PDB selection requires `reference_pdb_file` and `atom_name`, plus enough of `chain_id` / `residue_name` / `residue_number` to uniquely match one ATOM/HETATM record.
+Do not mix `forming_bond` with `forming_bonds`, or `breaking_bond` with `breaking_bonds`. Singular keys are aliases for a one-element list.
+
+Each atom is either an explicit `index` (same convention as `Simulation.idx_start_from`) or a PDB selector. Do not mix the two styles on a single atom. Different atoms or pairs in a list may use different styles. PDB selection requires `reference_pdb_file` and `atom_name`, plus enough of `chain_id` / `residue_name` / `residue_number` to uniquely match one ATOM/HETATM record.
 
 Accepted atom-field aliases: `chain`/`chainID`, `resname`/`resn`, `resid`/`resseq`/`resi`, `name`/`atom`/`atomname`.
 
@@ -123,6 +127,34 @@ plumed_config:
 
 Main CV: `rc = d_forming - d_breaking` (PLUMED labels `d1`, `d0`, then `rc`).
 
+### Concerted reactions (multiple forming and/or breaking bonds)
+
+Use `forming_bonds` and/or `breaking_bonds`. The scanned / steered CV is the sum of forming distances minus the sum of breaking distances:
+
+```text
+rc = sum(d_forming) - sum(d_breaking)
+```
+
+Each list item is the same `{atom1, atom2}` pair as the singular keys, including PDB selectors:
+
+```yaml
+plumed_config:
+  reference_pdb_file: cluster.pdb
+  forming_bonds:
+    - atom1: {residue_name: SAM, atom_name: CE}
+      atom2: {chain_id: A, residue_name: CYT, residue_number: 271, atom_name: SG}
+    - atom1: {index: 13}
+      atom2: {index: 46}
+  breaking_bonds:
+    - atom1: {residue_name: SAM, atom_name: SD}
+      atom2: {residue_name: SAM, atom_name: CE}
+  lower_bound: -4
+  upper_bound: 4
+  dump_interval: 20
+```
+
+The first breaking distance keeps the PLUMED label `d0` and extra breaking distances are `db1`, `db2`, …. The first forming distance keeps `d1` and extra forming distances are `df1`, `df2`, …. A single forming + single breaking pair therefore still emits `d0` / `d1` as before.
+
 ### Forming only / breaking only
 
 Omit the unused pair:
@@ -147,7 +179,7 @@ plumed_config:
   dump_interval: 20
 ```
 
-Optional `max_bond_length` adds an `UPPER_WALLS` restraint on the shorter of the two distances (difference mode) or on the single scanned distance. Descriptive `get_indices()` names are `forming_a`, `forming_b`, `breaking_a`, and `breaking_b`.
+Optional `max_bond_length` adds an `UPPER_WALLS` restraint on the shorter of the two distances (difference mode with one forming and one breaking bond), on the shortest of all scanned distances (difference mode with additional pairs), on the single scanned distance (forming-only / breaking-only with one pair), or on the longest of those distances (forming-only / breaking-only with multiple pairs). Descriptive `get_indices()` names are `forming_a`, `forming_b`, `breaking_a`, and `breaking_b` for the first pair, plus numbered keys `forming_0_a`, `forming_1_a`, `breaking_0_a`, and so on.
 
 ## SAMMT Generator
 
@@ -248,7 +280,7 @@ class MyConfigGenerator(PlumedConfigGenerator):
         return self.system.get_distance(0, 1, mic=False)
 ```
 
-For bond-forming / bond-breaking chemistry, prefer subclassing `BondReactionConfigGenerator` and supplying resolved `forming_bond` / `breaking_bond` pairs (see `SAMMTConfigGenerator`).
+For bond-forming / bond-breaking chemistry, prefer subclassing `BondReactionConfigGenerator` and supplying resolved `forming_bond` / `breaking_bond` or `forming_bonds` / `breaking_bonds` pairs (see `SAMMTConfigGenerator`).
 
 The base class constructor already records:
 

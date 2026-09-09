@@ -42,7 +42,9 @@ class EnerzymeScanLauncher:
         from .io import infer_reference_type
         self.reference_type = infer_reference_type(reference_path)
         self.reference = self.parse_reference(reference_path, self.reference_type)
-        self.constraint_freeze_xyz = self.reference.get("constraint_freeze", {}).get("xyz", [])
+        freeze = self.reference.get("constraint_freeze", {})
+        self.constraint_freeze_xyz = freeze.get("xyz", [])
+        self.extra_freeze_xyz = freeze.get("extra_xyz", [])
         self.constraint_scan = self.reference.get("constraint_scan", {})
         if plumed_patch_key is not None:
             logger.info(f"Using PLUMED CV-plugin scan mode (patch: {plumed_patch_key})")
@@ -156,13 +158,17 @@ class EnerzymeScanLauncher:
         traj_file: Optional[str]=None,
     ):
         idx_start_from = 0 if self.reference_type == "scan_config" else 1
+        extra = list(self.extra_freeze_xyz)
+        # Product opt must be free to re-form C–S so the endpoint can be checked.
+        if task == "opt" and traj_file and "product" in str(traj_file):
+            extra = []
         write_standalone_scan_config(
             config_path,
             task=task,
             initial_structure_path=initial_structure_path,
             charge=self.charge,
             multiplicity=self.multiplicity,
-            constraint_freeze_xyz=self.constraint_freeze_xyz,
+            constraint_freeze_xyz=list(self.constraint_freeze_xyz) + extra,
             idx_start_from=idx_start_from,
             constraint_scan=self.constraint_scan,
             plumed_patch_key=self.plumed_patch_key,

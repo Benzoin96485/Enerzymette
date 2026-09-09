@@ -107,6 +107,12 @@ def get_parser():
     parser_launch_enerzyme_neb.add_argument('--max_spring_constant', type=float,
         help='max spring constant', default=0.1
     )
+    parser_launch_enerzyme_neb.add_argument(
+        '--sidpp_hypersearch',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='ORCA SIDPP_HyperSearch: check initial-path connectivity and hypersearch S-IDPP settings',
+    )
 
     parser_launch_enerzyme_scan = subparsers.add_parser(
         "enerzyme_scan",
@@ -274,7 +280,8 @@ def main():
             optimization_method=args.optimization_method,
             max_restart_attempts=args.max_restart_attempts,
             min_spring_constant=args.min_spring_constant,
-            max_spring_constant=args.max_spring_constant
+            max_spring_constant=args.max_spring_constant,
+            sidpp_hypersearch=args.sidpp_hypersearch,
         )
         launcher.launch()
     elif args.command == "enerzyme_scan":

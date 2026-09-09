@@ -110,7 +110,8 @@ def test_sammt_from_pdb_matches_generic_difference(tmp_path):
     assert "d0: DISTANCE ATOMS=1,2 NOPBC" in definition
     assert "d1: DISTANCE ATOMS=2,3 NOPBC" in definition
     assert "dd: COMBINE ARG=d1,d0 COEFFICIENTS=1,-1 PERIODIC=NO" in definition
-    assert "UPPER_WALLS" in definition
+    assert "UPPER_WALLS" not in definition
+    assert any("UPPER_WALLS ARG=dsort.1" in line for line in sammt.define_additional_restraints())
 
     assert sammt.get_indices()["sulphur"] == 1
     assert sammt.get_indices()["nucleophile"] == 3
@@ -145,6 +146,18 @@ def test_sammt_rejects_generic_bond_kwargs():
             index_methyl_carbon=2,
             index_nucleophile=2,
             forming_bond={"atom1": {"index": 1}, "atom2": {"index": 2}},
+        )
+
+
+def test_sammt_rejects_plural_bond_kwargs():
+    system = Atoms(symbols=["S", "C"], positions=[[0, 0, 0], [1, 0, 0]])
+    with pytest.raises(ValueError, match="does not accept forming_bond"):
+        SAMMTConfigGenerator(
+            system,
+            index_sulphur=1,
+            index_methyl_carbon=2,
+            index_nucleophile=2,
+            forming_bonds=[{"atom1": {"index": 1}, "atom2": {"index": 2}}],
         )
 
 
