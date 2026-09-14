@@ -25,6 +25,7 @@ class EnerzymeScanLauncher:
         n_steps: int=25,
         plumed_patch_key: Optional[str]=None,
         plumed_cv_config: Optional[dict]=None,
+        calculator_patch: Optional[str]=None,
     ):
         self.reactant_path = reactant_path
         self.output_path = output_path
@@ -39,6 +40,13 @@ class EnerzymeScanLauncher:
         self.plumed_patch_key = plumed_patch_key
         self.plumed_cv_config = plumed_cv_config or {}
         self.plumed_patch = get_plumed_patch(plumed_patch_key) if plumed_patch_key is not None else None
+        self.calculator_patch_key = calculator_patch
+        if calculator_patch is not None and not os.path.isfile(calculator_patch):
+            from ..external_calculator import get_calculator_patch
+            calculator_patch = get_calculator_patch(calculator_patch)
+        self.calculator_patch = calculator_patch
+        if self.calculator_patch is not None:
+            logger.info(f"Using calculator patch: {self.calculator_patch}")
         from .io import infer_reference_type
         self.reference_type = infer_reference_type(reference_path)
         self.reference = self.parse_reference(reference_path, self.reference_type)
@@ -145,6 +153,7 @@ class EnerzymeScanLauncher:
             config_path,
             output_path,
             self.model_path,
+            calculator_patch=self.calculator_patch,
             plumed_patch=self.plumed_patch if with_plumed_patch else None,
             model_config_arg=model_config_arg,
         )
@@ -177,4 +186,5 @@ class EnerzymeScanLauncher:
             target_value=target_value,
             target_structure_path=target_structure_path,
             traj_file=traj_file,
+            calculator_patch_key=self.calculator_patch_key,
         )

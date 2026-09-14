@@ -135,6 +135,29 @@ class PlumedConfigGenerator(ABC):
             print_args=print_args if print_args is not None else self.default_print_args,
         )
 
+    def choose_scan_endpoints(
+        self,
+        rc: ReactionCoordinate,
+        *,
+        target_value: Optional[float] = None,
+        target_initial_value: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Pick scan start/end from the current CV and configured bounds.
+
+        Default: start at the current value and steer toward the farther of
+        ``lower_bound`` / ``upper_bound``, unless an explicit target is given.
+        Distances are literal (not periodic).
+        """
+        x0 = rc.initial_value
+        if target_value is not None:
+            return x0, float(target_value)
+        if target_initial_value is not None:
+            return x0, float(target_initial_value)
+        dist_to_lower = abs(x0 - rc.lower_bound)
+        dist_to_upper = abs(x0 - rc.upper_bound)
+        x1 = rc.lower_bound if dist_to_lower >= dist_to_upper else rc.upper_bound
+        return x0, x1
+
     def _append_optional_proton_transfer(
         self,
         plumed_config: List[str],

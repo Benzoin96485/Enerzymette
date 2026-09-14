@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -23,6 +24,30 @@ from ..plumed_config_generator import (
     get_scan_method_name,
     resolve_scan_endpoints,
 )
+
+_DEGREE_UNITS = {"deg", "degree", "degrees"}
+_UMA_PATCH_KEYS = {"uma", "uma_calculator"}
+
+
+def _angle_unit_is_deg(angle_unit: Any) -> bool:
+    return str(angle_unit or "rad").strip().lower() in _DEGREE_UNITS
+
+
+def yaml_target_value_to_scan_units(
+    plumed_cv_config: Dict[str, Any],
+    target_value: Optional[float],
+) -> Optional[float]:
+    """Convert a YAML ``target_value`` into native scan units.
+
+    Torsion ``angle_unit: deg`` values become radians. Bond-reaction targets
+    are already Ångströms and are returned unchanged.
+    """
+    if target_value is None:
+        return None
+    value = float(target_value)
+    if _angle_unit_is_deg(plumed_cv_config.get("angle_unit")):
+        return math.radians(value)
+    return value
 
 WriteConfigFn = Callable[..., None]
 SimulateCmdFn = Callable[[str, str, bool], List[str]]
@@ -70,11 +95,15 @@ def apply_plumed_scan_sampling(
         config["Simulation"]["optimize"] = {"optimizer": "LBFGS"}
     idx_start_from = config["Simulation"]["idx_start_from"]
     initial_structure = ase.io.read(structure_path, index=-1)
+    cv_cfg = dict(plumed_cv_config)
+    yaml_target = cv_cfg.pop("target_value", None)
+    if target_value is None:
+        target_value = yaml_target_value_to_scan_units(cv_cfg, yaml_target)
     x0, x1, num, rc = resolve_scan_endpoints(
         initial_structure,
         idx_start_from,
         plumed_patch_key,
-        plumed_cv_config,
+        cv_cfg,
         n_steps,
         target_value=target_value,
         target_structure_path=target_structure_path,
@@ -89,7 +118,7 @@ def apply_plumed_scan_sampling(
             "x0": float(x0),
             "x1": float(x1),
             "num": num,
-            "plumed_config": dict(plumed_cv_config),
+            "plumed_config": cv_cfg,
         },
     }
     logger.info(
@@ -171,6 +200,7 @@ def write_standalone_scan_config(
     target_value: Optional[float] = None,
     target_structure_path: Optional[str] = None,
     traj_file: Optional[str] = None,
+    calculator_patch_key: Optional[str] = None,
 ) -> None:
     optimize: Dict[str, Any] = {
         "optimizer": "LBFGS",
@@ -198,6 +228,13 @@ def write_standalone_scan_config(
             "multiplicity": multiplicity,
         },
     }
+    patch_key = str(calculator_patch_key or "").strip().lower()
+    if patch_key in _UMA_PATCH_KEYS:
+        base_config["Simulation"]["internal_calculator_weight"] = 0.0
+        base_config["Simulation"]["external_calculator"] = {
+            "name": "uma_calculator",
+            "weight": 1.0,
+        }
     if task == "plumed_scan":
         if plumed_patch_key is None:
             raise ValueError("plumed_scan task requires plumed_patch_key")

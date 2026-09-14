@@ -2,11 +2,12 @@
 
 Enerzymette builds PLUMED input through class-based generator plugins. A plugin is a Python module that exposes a `PlumedConfigGenerator` subclass. Enerzyme receives the plugin module through `enerzyme simulate -pp <path>`, instantiates the configured class with the current `ase.Atoms` object plus YAML parameters, and calls the configured method to produce `plumed.dat`.
 
-The design separates four layers:
+The design separates these layers:
 
 - `PlumedConfigGenerator` in `_engine.py`: system-independent workflow methods for steered MD, restrained MD, naive steered MD, scan restraints, and PLUMED unit preamble.
 - `BondReactionConfigGenerator` in `bond_reaction.py`: generic forming / breaking / difference bond reaction coordinates, optional additional restraints (e.g. `UPPER_WALLS`), with atom discovery via `atom_selection.py`.
 - Chemistry-specific generator subclasses such as `SAMMTConfigGenerator` in `sammt.py`: specialized presets that fill in bond pairs from domain conventions.
+- `TorsionConfigGenerator` in `torsion.py`: a four-atom dihedral (`TORSION`) coordinate, sibling of the bond-reaction family rather than a subclass of it.
 - Proton-transfer plugins in `proton_transfer.py`, such as `local_opes`: optional auxiliary CV/bias builders that can be inserted into any generator through `proton_transfer`.
 
 ```text
@@ -15,6 +16,8 @@ arbitrary CV plugin
 BondReactionConfigGenerator   ← forming / breaking / difference
         ↑
 SAMMTConfigGenerator          ← SAM SD–CE break, CE–Nu form
+
+TorsionConfigGenerator        ← four-atom TORSION scan
 ```
 
 ## User Interface
@@ -83,6 +86,7 @@ CLI plugin keys (`enerzymette enerzyme_scan -pp ...`, active learning `-pp ...`)
 
 - `bond_reaction` → `BondReactionConfigGenerator`
 - `sammt` → `SAMMTConfigGenerator`
+- `torsion` → `TorsionConfigGenerator`
 
 ## Bond Reaction Generator
 
@@ -208,6 +212,54 @@ plumed_config:
 ```
 
 The descriptive index names exposed by `get_indices()` are `sulphur`, `sulfur`, `methyl_carbon`, and `nucleophile` (plus the generic `forming_*` / `breaking_*` aliases). Proton-transfer configs can refer to these names, for example `donor: nucleophile`.
+
+## Torsion Generator
+
+`TorsionConfigGenerator` scans or steers a signed dihedral defined by four atoms in PLUMED `ATOMS=i,j,k,l` order. Atom identities are resolved in Python (explicit `index` or PDB selectors, same rules as bond reaction). The emitted `plumed.dat` uses only 1-based atom numbers with `NOPBC`. Do not use PLUMED `MOLINFO` or named protein torsions (`@phi`, `@psi`, …).
+
+```yaml
+plumed_config:
+  # Four atoms, PLUMED ATOMS order i-j-k-l. Mix index and PDB across atoms;
+  # do not mix styles on a single atom.
+  atoms:
+    - {index: 12}
+    - {residue_name: SAM, atom_name: CE}
+    - {chain_id: A, residue_name: ASP, residue_number: 141, atom_name: CG}
+    - {index: 88}
+  # Or atom1..atom4; or atoms: [12, 13, 14, 15]
+  lower_bound: -3.141592653589793   # default ±π (rad) or ±180 (deg)
+  upper_bound: 3.141592653589793
+  dump_interval: 20
+  angle_unit: rad                   # rad (default) | deg; PLUMED / RC always radians
+  cv_name: phi                      # optional, default phi
+  reference_pdb_file: cluster.pdb   # required when any atom uses a PDB selector
+```
+
+Hand-written Enerzyme scan sampling (`x0` / `x1` are always radians, the native TORSION unit):
+
+```yaml
+sampling:
+  cv: plumed
+  params:
+    x0: -3.141592653589793
+    x1: 3.141592653589793
+    num: 37
+    plumed_config:
+      atoms: [12, 13, 14, 15]
+      dump_interval: 20
+```
+
+Main CV line:
+
+```text
+phi: TORSION ATOMS=12,13,15,88 NOPBC
+```
+
+The scan interval is **literal**. `-π` to `π` has width `2π` (one full turn). Endpoints are never folded onto the shortest periodic arc, so that range is not treated as a no-op. PLUMED `TORSION` itself remains a periodic CV; Enerzyme still interpolates with `np.linspace(x0, x1, num)`.
+
+Without an explicit `target_value` or target structure, `resolve_scan_endpoints()` uses the configured `[lower_bound, upper_bound]` (converted to radians). Bond-reaction plugins still start from the current CV and walk to the farther bound. With a target, torsion starts at the current principal-value dihedral and goes to the target without wrapping.
+
+`get_indices()` names are `atom1`, `atom2`, `atom3`, and `atom4`.
 
 ## Proton Transfer
 
@@ -355,7 +407,7 @@ proton_transfer:
 
 ## Launcher Integration
 
-`resolve_scan_endpoints()` instantiates the registered generator and uses `build_reaction_coordinate()` to compute the current coordinate. It chooses scan endpoints from an explicit target value, a target structure, or the farther configured bound.
+`resolve_scan_endpoints()` instantiates the registered generator and uses `build_reaction_coordinate()` to compute the current coordinate. It then calls `choose_scan_endpoints()`: bond-reaction plugins pick an explicit target value, a target structure, or the farther configured bound; `TorsionConfigGenerator` uses the configured `[lower_bound, upper_bound]` when no target is given, so `-π` → `π` remains a full turn.
 
 `altoolkit` and `scantoolkit` emit class-based scan configs automatically when a PLUMED plugin key is supplied. Active learning also injects per-structure `proton_transfer.scope_file`, `proton_transfer.state_file`, `proton_transfer.restart`, and `proton_transfer.topology_mol_file` when proton transfer is enabled in the base YAML. When the simulation uses `standard_steered_md` and pre-simulation steps are enabled, altoolkit switches the pre-simulation method to `standard_restrained_md` so additional restraints (e.g. `UPPER_WALLS`) remain active without steering.
 
