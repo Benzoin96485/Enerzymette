@@ -7,6 +7,7 @@ from .workflow import (
     build_enerzyme_simulate_cmd,
     copy_reaction_local_minima,
     find_lowest_local_minima,
+    require_ase_bond_pair,
     run_elementary_reaction_scan,
     run_scan_chain,
     write_standalone_scan_config,
@@ -25,6 +26,7 @@ class EnerzymeScanLauncher:
         n_steps: int=25,
         plumed_patch_key: Optional[str]=None,
         plumed_cv_config: Optional[dict]=None,
+        calculator_patch: Optional[str]=None,
     ):
         self.reactant_path = reactant_path
         self.output_path = output_path
@@ -39,6 +41,13 @@ class EnerzymeScanLauncher:
         self.plumed_patch_key = plumed_patch_key
         self.plumed_cv_config = plumed_cv_config or {}
         self.plumed_patch = get_plumed_patch(plumed_patch_key) if plumed_patch_key is not None else None
+        self.calculator_patch_key = calculator_patch
+        if calculator_patch is not None and not os.path.isfile(calculator_patch):
+            from ..external_calculator import get_calculator_patch
+            calculator_patch = get_calculator_patch(calculator_patch)
+        self.calculator_patch = calculator_patch
+        if self.calculator_patch is not None:
+            logger.info(f"Using calculator patch: {self.calculator_patch}")
         from .io import infer_reference_type
         self.reference_type = infer_reference_type(reference_path)
         self.reference = self.parse_reference(reference_path, self.reference_type)
@@ -48,6 +57,8 @@ class EnerzymeScanLauncher:
         self.constraint_scan = self.reference.get("constraint_scan", {})
         if plumed_patch_key is not None:
             logger.info(f"Using PLUMED CV-plugin scan mode (patch: {plumed_patch_key})")
+        else:
+            require_ase_bond_pair(self.constraint_scan)
         logger.info(f"Constraint freeze xyz: {self.constraint_freeze_xyz}")
         self.charge = int(self.reference.get("main", {}).get("charge", 0))
         logger.info(f"Charge: {self.charge}")
@@ -145,6 +156,7 @@ class EnerzymeScanLauncher:
             config_path,
             output_path,
             self.model_path,
+            calculator_patch=self.calculator_patch,
             plumed_patch=self.plumed_patch if with_plumed_patch else None,
             model_config_arg=model_config_arg,
         )
@@ -177,4 +189,5 @@ class EnerzymeScanLauncher:
             target_value=target_value,
             target_structure_path=target_structure_path,
             traj_file=traj_file,
+            calculator_patch_key=self.calculator_patch_key,
         )

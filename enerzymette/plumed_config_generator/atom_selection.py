@@ -9,6 +9,7 @@ must not be mixed on the same atom.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Integral
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 
@@ -365,6 +366,154 @@ def _format_pdb_selector(spec: AtomSpec) -> str:
     if spec.atom_name is not None:
         parts.append(f"atom_name={spec.atom_name!r}")
     return "{" + ", ".join(parts) + "}"
+
+
+@dataclass(frozen=True)
+class TorsionSpec:
+    """Four atoms that define a PLUMED TORSION (ATOMS=i,j,k,l order)."""
+
+    atom1: AtomSpec
+    atom2: AtomSpec
+    atom3: AtomSpec
+    atom4: AtomSpec
+
+    def validate(self, *, label: str = "torsion") -> None:
+        self.atom1.validate(label=f"{label}.atom1")
+        self.atom2.validate(label=f"{label}.atom2")
+        self.atom3.validate(label=f"{label}.atom3")
+        self.atom4.validate(label=f"{label}.atom4")
+
+    def atoms(self) -> Tuple[AtomSpec, AtomSpec, AtomSpec, AtomSpec]:
+        return (self.atom1, self.atom2, self.atom3, self.atom4)
+
+
+def coerce_atom_spec(
+    value: Any,
+    *,
+    label: str = "atom",
+) -> AtomSpec:
+    """Accept an :class:`AtomSpec`, integer index, or YAML-style mapping."""
+    if value is None:
+        raise ValueError(f"{label}: atom spec cannot be None")
+    if isinstance(value, AtomSpec):
+        value.validate(label=label)
+        return value
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        if isinstance(value, Mapping):
+            spec = atom_spec_from_mapping(value, label=label)
+            assert spec is not None
+            return spec
+        raise TypeError(
+            f"{label}: expected an AtomSpec, integer index, or mapping; "
+            f"got {type(value).__name__}"
+        )
+    spec = AtomSpec(index=int(value))
+    spec.validate(label=label)
+    return spec
+
+
+def torsion_from_mapping(
+    data: Optional[Mapping[str, Any]],
+    *,
+    label: str = "torsion",
+) -> Optional[TorsionSpec]:
+    """Build a :class:`TorsionSpec` from ``atoms`` or ``atom1``..``atom4``."""
+    if data is None:
+        return None
+    if not isinstance(data, Mapping):
+        raise TypeError(f"{label}: expected a mapping, got {type(data).__name__}")
+    if not data:
+        raise ValueError(f"{label}: empty mapping is not a valid torsion")
+
+    remaining: Dict[str, Any] = dict(data)
+    atoms_raw = remaining.pop("atoms", None)
+    named_keys = ("atom1", "atom2", "atom3", "atom4")
+    has_named = any(key in remaining for key in named_keys)
+    if atoms_raw is not None and has_named:
+        raise ValueError(f"{label}: provide atoms or atom1..atom4, not both")
+
+    if atoms_raw is not None:
+        if not isinstance(atoms_raw, (list, tuple)):
+            raise TypeError(
+                f"{label}.atoms: expected a sequence of 4 atom specs, "
+                f"got {type(atoms_raw).__name__}"
+            )
+        if len(atoms_raw) != 4:
+            raise ValueError(
+                f"{label}.atoms: expected exactly 4 atoms, got {len(atoms_raw)}"
+            )
+        specs = [
+            coerce_atom_spec(item, label=f"{label}.atoms[{index}]")
+            for index, item in enumerate(atoms_raw)
+        ]
+        unknown = sorted(str(key) for key in remaining.keys())
+        if unknown:
+            raise ValueError(f"{label}: unknown fields {unknown}")
+        torsion = TorsionSpec(*specs)
+        torsion.validate(label=label)
+        return torsion
+
+    atom_values = []
+    for name in named_keys:
+        if name not in remaining:
+            raise ValueError(f"{label}: {name} is required when atoms is omitted")
+        atom_values.append(
+            coerce_atom_spec(remaining.pop(name), label=f"{label}.{name}")
+        )
+    unknown = sorted(str(key) for key in remaining.keys())
+    if unknown:
+        raise ValueError(f"{label}: unknown fields {unknown}")
+    torsion = TorsionSpec(*atom_values)
+    torsion.validate(label=label)
+    return torsion
+
+
+def coerce_torsion(
+    value: Optional[Union["TorsionSpec", Mapping[str, Any], Sequence[Any]]],
+    *,
+    label: str = "torsion",
+) -> Optional[TorsionSpec]:
+    """Accept a :class:`TorsionSpec`, mapping, or 4-atom sequence."""
+    if value is None:
+        return None
+    if isinstance(value, TorsionSpec):
+        value.validate(label=label)
+        return value
+    if isinstance(value, Mapping):
+        return torsion_from_mapping(value, label=label)
+    if isinstance(value, (list, tuple)):
+        return torsion_from_mapping({"atoms": value}, label=label)
+    raise TypeError(
+        f"{label}: expected a TorsionSpec, mapping, or sequence of 4 atoms; "
+        f"got {type(value).__name__}"
+    )
+
+
+def resolve_torsion_indices(
+    spec: TorsionSpec,
+    *,
+    idx_start_from: int,
+    reference_pdb_file: Optional[str] = None,
+    pdb_records: Optional[Sequence[PdbAtomRecord]] = None,
+    n_atoms: Optional[int] = None,
+    label: str = "torsion",
+) -> Tuple[int, int, int, int]:
+    """Resolve all four torsion atoms to caller-convention indices."""
+    spec.validate(label=label)
+    if pdb_records is None and reference_pdb_file is not None:
+        pdb_records = parse_pdb_atoms(reference_pdb_file)
+    indices = [
+        resolve_atom_index(
+            atom,
+            idx_start_from=idx_start_from,
+            reference_pdb_file=reference_pdb_file,
+            pdb_records=pdb_records,
+            n_atoms=n_atoms,
+            label=f"{label}.atom{i}",
+        )
+        for i, atom in enumerate(spec.atoms(), start=1)
+    ]
+    return indices[0], indices[1], indices[2], indices[3]
 
 
 def coerce_bond_pair(

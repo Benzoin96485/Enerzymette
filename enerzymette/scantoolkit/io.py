@@ -94,14 +94,19 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
         logger.info(f"Extra freeze atom indices: {extra_freeze}")
 
     constraint_scan_section = data.get("constraint_scan")
+    if constraint_scan_section is None:
+        constraint_scan_section = {}
     if not isinstance(constraint_scan_section, dict):
-        raise ValueError("Scan config must have constraint_scan mapping")
+        raise ValueError("Scan config constraint_scan must be a mapping if present")
     bond_config = constraint_scan_section.get("bond")
-    if not isinstance(bond_config, dict):
-        raise ValueError("Scan config constraint_scan must include bond section")
-
-    i0, i1 = _resolve_scan_bond_indices(bond_config, reference_pdb)
-    logger.info(f"Scan bond indices from config: i0={i0}, i1={i1}")
+    if isinstance(bond_config, dict):
+        i0, i1 = _resolve_scan_bond_indices(bond_config, reference_pdb)
+        logger.info(f"Scan bond indices from config: i0={i0}, i1={i1}")
+        constraint_scan_bond = {"i0": i0, "i1": i1}
+    else:
+        # PLUMED CV scans (torsion / bond_reaction) do not use ASE bond scan.
+        logger.info("No constraint_scan.bond; PLUMED CV scan will supply the coordinate")
+        constraint_scan_bond = {}
 
     if data.get("charge") is not None:
         charge = int(data["charge"])
@@ -120,10 +125,7 @@ def parse_scan_config(scan_config_path: str, output_path: str) -> Dict[str, Dict
             "extra_xyz": extra_freeze,
         },
         "constraint_scan": {
-            "bond": {
-                "i0": i0,
-                "i1": i1,
-            },
+            "bond": constraint_scan_bond,
         },
     }
 

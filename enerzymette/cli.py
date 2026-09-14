@@ -138,10 +138,13 @@ def get_parser():
         help='number of steps', default=25
     )
     parser_launch_enerzyme_scan.add_argument('-pp', '--plumed_patch', type=str, default=None,
-        help='PLUMED CV plugin key (e.g. sammt); enables plumed_scan instead of ASE bond scan'
+        help='PLUMED CV plugin key (e.g. sammt, torsion, bond_reaction); enables plumed_scan instead of ASE bond scan'
     )
     parser_launch_enerzyme_scan.add_argument('-psc', '--plumed_cv_config', type=str, default=None,
         help='YAML file with CV-plugin params (bounds, dump_interval, reference_pdb_file, etc.)'
+    )
+    parser_launch_enerzyme_scan.add_argument('-cp', '--calculator_patch', type=str, default=None,
+        help='external calculator patch path or key (e.g. uma); enables UMA-only scans'
     )
     parser_update_terachem_scan = subparsers.add_parser(
         "update_terachem_scan",
@@ -301,6 +304,7 @@ def main():
             n_steps=args.n_steps,
             plumed_patch_key=args.plumed_patch,
             plumed_cv_config=plumed_cv_config,
+            calculator_patch=args.calculator_patch,
         )
         launcher.launch()
     elif args.command == "update_terachem_scan":

@@ -7,14 +7,19 @@ import pytest
 from enerzymette.plumed_config_generator.atom_selection import (
     AtomSpec,
     BondPairSpec,
+    TorsionSpec,
     atom_spec_from_mapping,
     bond_pair_from_mapping,
+    coerce_atom_spec,
     coerce_bond_pairs,
+    coerce_torsion,
     parse_pdb_atoms,
     resolve_atom_index,
     resolve_bond_pair_indices,
+    resolve_torsion_indices,
     to_ase_index,
     to_plumed_index,
+    torsion_from_mapping,
 )
 
 
@@ -163,3 +168,78 @@ def test_pdb_selection_requires_reference_file():
             AtomSpec(residue_name="SAM", atom_name="SD"),
             idx_start_from=1,
         )
+
+
+def test_coerce_atom_spec_int_and_mapping():
+    assert coerce_atom_spec(12, label="atom1") == AtomSpec(index=12)
+    spec = coerce_atom_spec({"index": 3}, label="atom1")
+    assert spec.index == 3
+    with pytest.raises(TypeError, match="expected an AtomSpec"):
+        coerce_atom_spec(True, label="atom1")
+    with pytest.raises(ValueError, match="cannot be None"):
+        coerce_atom_spec(None, label="atom1")
+
+
+def test_torsion_from_mapping_atoms_or_named():
+    from_list = torsion_from_mapping({"atoms": [1, 2, 3, 4]})
+    assert from_list == TorsionSpec(
+        AtomSpec(index=1),
+        AtomSpec(index=2),
+        AtomSpec(index=3),
+        AtomSpec(index=4),
+    )
+    named = torsion_from_mapping(
+        {
+            "atom1": {"index": 1},
+            "atom2": 2,
+            "atom3": {"index": 3},
+            "atom4": {"index": 4},
+        }
+    )
+    assert named.atom2.index == 2
+    with pytest.raises(ValueError, match="not both"):
+        torsion_from_mapping({"atoms": [1, 2, 3, 4], "atom1": {"index": 1}})
+    with pytest.raises(ValueError, match="exactly 4"):
+        torsion_from_mapping({"atoms": [1, 2, 3]})
+    with pytest.raises(ValueError, match="atom4 is required"):
+        torsion_from_mapping({"atom1": 1, "atom2": 2, "atom3": 3})
+
+
+def test_coerce_torsion_sequence_and_spec():
+    spec = coerce_torsion([10, 11, 12, 13], label="atoms")
+    assert spec.atom1.index == 10
+    assert spec.atom4.index == 13
+    same = coerce_torsion(spec, label="atoms")
+    assert same is spec
+    assert coerce_torsion(None, label="atoms") is None
+
+
+def test_resolve_torsion_indices_pdb_and_index(tmp_path):
+    pdb = tmp_path / "four.pdb"
+    pdb.write_text(
+        "\n".join(
+            [
+                "HETATM    1  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C",
+                "HETATM    2  C2  LIG A   1       1.000   0.000   0.000  1.00  0.00           C",
+                "HETATM    3  C3  LIG A   1       2.000   0.000   0.000  1.00  0.00           C",
+                "HETATM    4  C4  LIG A   1       3.000   0.000   0.000  1.00  0.00           C",
+            ]
+        )
+        + "\n"
+    )
+    spec = torsion_from_mapping(
+        {
+            "atoms": [
+                {"resname": "LIG", "atom_name": "C1"},
+                2,
+                {"residue_name": "LIG", "atom_name": "C3"},
+                {"index": 4},
+            ]
+        }
+    )
+    assert resolve_torsion_indices(
+        spec,
+        idx_start_from=1,
+        reference_pdb_file=str(pdb),
+        n_atoms=4,
+    ) == (1, 2, 3, 4)

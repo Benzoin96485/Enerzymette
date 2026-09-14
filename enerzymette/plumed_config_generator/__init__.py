@@ -24,13 +24,18 @@ from ._engine import (
 from .atom_selection import (
     AtomSpec,
     BondPairSpec,
+    TorsionSpec,
     atom_spec_from_mapping,
     bond_pair_from_mapping,
+    coerce_atom_spec,
+    coerce_torsion,
     parse_pdb_atoms,
     resolve_atom_index,
     resolve_bond_pair_indices,
+    resolve_torsion_indices,
     to_ase_index,
     to_plumed_index,
+    torsion_from_mapping,
 )
 from .proton_transfer import (
     LocalOpesProtonTransferPlugin,
@@ -47,6 +52,7 @@ __all__ = [
     "PLUMED_CV_PLUGINS",
     "AtomSpec",
     "BondPairSpec",
+    "TorsionSpec",
     "PlumedConfigGenerator",
     "PlumedCvPluginSpec",
     "LocalOpesProtonTransferPlugin",
@@ -57,6 +63,8 @@ __all__ = [
     "append_optional_proton_transfer",
     "atom_spec_from_mapping",
     "bond_pair_from_mapping",
+    "coerce_atom_spec",
+    "coerce_torsion",
     "build_proton_transfer_config",
     "ReactionCoordinate",
     "generate_restrained_md",
@@ -74,8 +82,10 @@ __all__ = [
     "resolve_atom_index",
     "resolve_bond_pair_indices",
     "resolve_scan_endpoints",
+    "resolve_torsion_indices",
     "to_ase_index",
     "to_plumed_index",
+    "torsion_from_mapping",
 ]
 
 
@@ -92,8 +102,8 @@ class PlumedCvPluginSpec:
 
 
 # Registry of CV plugins shipped with Enerzymette. Keys are used by CLI
-# (-pp sammt / -pp bond_reaction) and by scantoolkit / altoolkit when emitting
-# Enerzyme configs.
+# (-pp sammt / -pp bond_reaction / -pp torsion) and by scantoolkit / altoolkit
+# when emitting Enerzyme configs.
 PLUMED_CV_PLUGINS: Dict[str, PlumedCvPluginSpec] = {
     "bond_reaction": PlumedCvPluginSpec(
         key="bond_reaction",
@@ -113,6 +123,16 @@ PLUMED_CV_PLUGINS: Dict[str, PlumedCvPluginSpec] = {
         description=(
             "SAM methyltransferase coordinate dd = d(CE–Nu) − d(SD–CE); "
             "specialized bond_reaction with SAM SD/CE + substrate nucleophile."
+        ),
+    ),
+    "torsion": PlumedCvPluginSpec(
+        key="torsion",
+        module_name=".torsion",
+        class_name="TorsionConfigGenerator",
+        description=(
+            "Four-atom dihedral TORSION (ATOMS=i,j,k,l); atoms from PDB "
+            "selectors or explicit indices; scan interval is literal "
+            "(−π to π is one full turn, not a periodic no-op)."
         ),
     ),
 }
@@ -213,10 +233,8 @@ def resolve_scan_endpoints(
     generator_cls = get_config_generator_class(plumed_patch_key)
     generator = generator_cls(system, idx_start_from=idx_start_from, **plumed_cv_config)
     rc = generator.build_reaction_coordinate(**plumed_cv_config)
-    x0 = rc.initial_value
-    if target_value is not None:
-        x1 = target_value
-    elif target_structure_path is not None:
+    target_initial_value = None
+    if target_value is None and target_structure_path is not None:
         target_system = ase.io.read(target_structure_path, index=-1)
         target_generator = generator_cls(
             target_system,
@@ -224,9 +242,10 @@ def resolve_scan_endpoints(
             **plumed_cv_config,
         )
         target_rc = target_generator.build_reaction_coordinate(**plumed_cv_config)
-        x1 = target_rc.initial_value
-    else:
-        dist_to_lower = abs(x0 - rc.lower_bound)
-        dist_to_upper = abs(x0 - rc.upper_bound)
-        x1 = rc.lower_bound if dist_to_lower >= dist_to_upper else rc.upper_bound
+        target_initial_value = target_rc.initial_value
+    x0, x1 = generator.choose_scan_endpoints(
+        rc,
+        target_value=target_value,
+        target_initial_value=target_initial_value,
+    )
     return x0, x1, num, rc
