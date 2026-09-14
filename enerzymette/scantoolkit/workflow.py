@@ -127,6 +127,26 @@ def apply_plumed_scan_sampling(
     )
 
 
+def require_ase_bond_pair(
+    constraint_scan: Optional[Dict[str, Any]],
+) -> Tuple[int, int]:
+    """Return ``(i0, i1)`` for an ASE distance scan, or raise a clear error.
+
+    An empty ``constraint_scan.bond`` is valid for PLUMED CV scans (``-pp``),
+    but ASE ``task: scan`` still needs explicit bond indices.
+    """
+    bond = None
+    if isinstance(constraint_scan, dict):
+        bond = constraint_scan.get("bond")
+    if not isinstance(bond, dict) or bond.get("i0") is None or bond.get("i1") is None:
+        raise ValueError(
+            "ASE bond scan requires constraint_scan.bond with i0 and i1 "
+            "(or a SAMMT bond plugin in the scan YAML). "
+            "For a PLUMED CV scan, pass -pp (e.g. torsion, bond_reaction, sammt)."
+        )
+    return int(bond["i0"]), int(bond["i1"])
+
+
 def apply_bond_scan_sampling(
     config: Dict[str, Any],
     *,
@@ -137,51 +157,47 @@ def apply_bond_scan_sampling(
     target_value: Optional[float] = None,
     target_structure_path: Optional[str] = None,
 ) -> None:
-    for constraint_type, constraint_params in constraint_scan.items():
-        if constraint_type != "bond":
-            continue
-        index0 = constraint_params["i0"]
-        index1 = constraint_params["i1"]
-        ase_i0 = index0 - idx_start_from
-        ase_i1 = index1 - idx_start_from
-        initial_structure = ase.io.read(structure_path, index=-1)
-        initial_value = initial_structure.get_distance(ase_i0, ase_i1)
-        if target_value is None:
-            if target_structure_path is None:
-                from mendeleev import element
+    index0, index1 = require_ase_bond_pair(constraint_scan)
+    ase_i0 = index0 - idx_start_from
+    ase_i1 = index1 - idx_start_from
+    initial_structure = ase.io.read(structure_path, index=-1)
+    initial_value = initial_structure.get_distance(ase_i0, ase_i1)
+    if target_value is None:
+        if target_structure_path is None:
+            from mendeleev import element
 
-                element0 = element(initial_structure.symbols[ase_i0])
-                element1 = element(initial_structure.symbols[ase_i1])
-                target_value = (
-                    element0.covalent_radius_pyykko + element1.covalent_radius_pyykko
-                ) / 100
-                logger.info(
-                    f"Target value is set to {target_value} Angstrom based on "
-                    f"single-bond Pyykko covalent radii for bond between atoms "
-                    f"{index0} and {index1}"
-                )
-            else:
-                target_structure = ase.io.read(target_structure_path, index=-1)
-                target_value = target_structure.get_distance(ase_i0, ase_i1)
-                logger.info(
-                    f"Target value is set to {target_value} Angstrom based on "
-                    f"distance between atoms {index0} and {index1} in reference "
-                    f"target structure {target_structure_path}"
-                )
-        config["Simulation"]["sampling"] = {
-            "cv": "distance",
-            "params": {
-                "x0": float(initial_value),
-                "x1": float(target_value),
-                "num": n_steps,
-                "i0": index0,
-                "i1": index1,
-            },
-        }
-        logger.info(
-            f"Scanning distance between atoms {index0} and {index1} from "
-            f"{initial_value} to {target_value} with {n_steps} steps"
-        )
+            element0 = element(initial_structure.symbols[ase_i0])
+            element1 = element(initial_structure.symbols[ase_i1])
+            target_value = (
+                element0.covalent_radius_pyykko + element1.covalent_radius_pyykko
+            ) / 100
+            logger.info(
+                f"Target value is set to {target_value} Angstrom based on "
+                f"single-bond Pyykko covalent radii for bond between atoms "
+                f"{index0} and {index1}"
+            )
+        else:
+            target_structure = ase.io.read(target_structure_path, index=-1)
+            target_value = target_structure.get_distance(ase_i0, ase_i1)
+            logger.info(
+                f"Target value is set to {target_value} Angstrom based on "
+                f"distance between atoms {index0} and {index1} in reference "
+                f"target structure {target_structure_path}"
+            )
+    config["Simulation"]["sampling"] = {
+        "cv": "distance",
+        "params": {
+            "x0": float(initial_value),
+            "x1": float(target_value),
+            "num": n_steps,
+            "i0": index0,
+            "i1": index1,
+        },
+    }
+    logger.info(
+        f"Scanning distance between atoms {index0} and {index1} from "
+        f"{initial_value} to {target_value} with {n_steps} steps"
+    )
 
 
 def write_standalone_scan_config(

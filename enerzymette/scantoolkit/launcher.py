@@ -7,6 +7,7 @@ from .workflow import (
     build_enerzyme_simulate_cmd,
     copy_reaction_local_minima,
     find_lowest_local_minima,
+    require_ase_bond_pair,
     run_elementary_reaction_scan,
     run_scan_chain,
     write_standalone_scan_config,
@@ -56,6 +57,8 @@ class EnerzymeScanLauncher:
         self.constraint_scan = self.reference.get("constraint_scan", {})
         if plumed_patch_key is not None:
             logger.info(f"Using PLUMED CV-plugin scan mode (patch: {plumed_patch_key})")
+        else:
+            require_ase_bond_pair(self.constraint_scan)
         logger.info(f"Constraint freeze xyz: {self.constraint_freeze_xyz}")
         self.charge = int(self.reference.get("main", {}).get("charge", 0))
         logger.info(f"Charge: {self.charge}")
