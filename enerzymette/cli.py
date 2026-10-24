@@ -208,6 +208,12 @@ def get_parser():
     parser_enerzyme_active_learning.add_argument('-np', '--n_presimulation_steps_per_iteration', type=int,
         help='number of presimulation steps per iteration', default=0
     )
+    parser_enerzyme_active_learning.add_argument('-ar', '--A_ratio', type=float,
+        help='set the UDD strength A in each iteration so that, with the exponential factor set to 1, '
+             'the mean absolute Cartesian component of the UDD bias force is A_ratio times that of the '
+             'forces predicted on the frames used to calibrate B; non-positive values keep A from the '
+             'simulation config', default=0.36
+    )
     parser_enerzyme_active_learning.add_argument('--initial-scan', action='store_true', default=False,
         help='run iterative flexible scan before AL to seed the structure pool'
     )
@@ -331,6 +337,7 @@ def main():
             training_ratio=args.training_ratio,
             cluster_inference_batch_size=args.cluster_inference_batch_size,
             n_presimulation_steps_per_iteration=args.n_presimulation_steps_per_iteration,
+            A_ratio=args.A_ratio,
             initial_scan=args.initial_scan,
             n_initial_scan_steps=args.n_initial_scan_steps,
             continual_learning=args.continual_learning,
