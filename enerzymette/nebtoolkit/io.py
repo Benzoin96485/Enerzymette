@@ -20,8 +20,10 @@ def parse_neb_config(neb_config_path: str, output_path: str) -> Dict[str, Dict[s
     """Parse YAML neb_config used as an alternative to a TeraChem reference input.
 
     Expected keys:
-      - reference_pdb (required): PDB used to resolve freeze atom indices
-      - freeze_index_types (required): keys of index_type_map (e.g. backbone)
+      - reference_pdb: PDB used to resolve freeze atom indices.
+        Required when freeze_index_types is set, or when charge is omitted.
+      - freeze_index_types: keys of index_type_map (e.g. backbone).
+        Omit or leave empty to freeze nothing.
       - charge (optional): if set, skip deriving charge from reference PDB
       - reference_sdf (optional): ligand template for charge derivation when charge omitted
       - multiplicity / spinmult (optional, default 1)
@@ -34,11 +36,10 @@ def parse_neb_config(neb_config_path: str, output_path: str) -> Dict[str, Dict[s
         raise ValueError(f"NEB config must be a YAML mapping: {neb_config_path}")
 
     reference_pdb = data.get("reference_pdb")
-    if not reference_pdb:
-        raise ValueError(f"NEB config must have reference_pdb: {neb_config_path}")
-    reference_pdb = abs_path(reference_pdb, config_dir)
-    if not os.path.exists(reference_pdb):
-        raise FileNotFoundError(f"reference_pdb not found: {reference_pdb}")
+    if reference_pdb:
+        reference_pdb = abs_path(reference_pdb, config_dir)
+        if not os.path.exists(reference_pdb):
+            raise FileNotFoundError(f"reference_pdb not found: {reference_pdb}")
 
     reference_sdf = data.get("reference_sdf")
     if reference_sdf:
@@ -48,29 +49,37 @@ def parse_neb_config(neb_config_path: str, output_path: str) -> Dict[str, Dict[s
 
     multiplicity = int(data.get("multiplicity", data.get("spinmult", 1)))
 
-    freeze_index_types: List[str] = data.get("freeze_index_types", [])
-    if not freeze_index_types:
-        raise ValueError(
-            f"NEB config must specify freeze_index_types "
-            f"(keys of index_type_map: {', '.join(index_type_map)})"
+    freeze_index_types: List[str] = data.get("freeze_index_types") or []
+    if freeze_index_types:
+        if not reference_pdb:
+            raise ValueError(
+                f"NEB config must have reference_pdb when freeze_index_types "
+                f"is set: {neb_config_path}"
+            )
+        unknown_types = [t for t in freeze_index_types if t not in index_type_map]
+        if unknown_types:
+            raise ValueError(
+                f"Unknown freeze_index_types: {unknown_types}. "
+                f"Valid options: {', '.join(index_type_map)}"
+            )
+        # 0-based indices (same convention as scan_config); converted for ORCA via idx_start_from
+        constraint_freeze_xyz = get_indices(reference_pdb, 0, freeze_index_types)
+        logger.info(
+            f"Freeze indices from {freeze_index_types} on {reference_pdb}: "
+            f"{len(constraint_freeze_xyz)} atoms"
         )
-    unknown_types = [t for t in freeze_index_types if t not in index_type_map]
-    if unknown_types:
-        raise ValueError(
-            f"Unknown freeze_index_types: {unknown_types}. "
-            f"Valid options: {', '.join(index_type_map)}"
-        )
-    # 0-based indices (same convention as scan_config); converted for ORCA via idx_start_from
-    constraint_freeze_xyz = get_indices(reference_pdb, 0, freeze_index_types)
-    logger.info(
-        f"Freeze indices from {freeze_index_types} on {reference_pdb}: "
-        f"{len(constraint_freeze_xyz)} atoms"
-    )
+    else:
+        constraint_freeze_xyz = []
+        logger.info("No atoms frozen")
 
     if data.get("charge") is not None:
         charge = int(data["charge"])
         logger.info(f"Using charge ({charge}) from NEB config {neb_config_path}")
     else:
+        if not reference_pdb:
+            raise ValueError(
+                f"NEB config must set charge or reference_pdb: {neb_config_path}"
+            )
         topology_dir = os.path.join(os.path.abspath(output_path), "topology")
         charge = charge_from_reference_pdb(reference_pdb, topology_dir, reference_sdf)
 
@@ -128,11 +137,14 @@ end
 
 """
     orca_freeze_indices = [i - idx_start_from for i in constraint_freeze_xyz]
-    neb_in_constraints = (
-        "%geom Constraints\n"
-        + "\n".join([f"{{ C {i} C }}" for i in orca_freeze_indices])
-        + "\nend\nend\n"
-    )
+    if orca_freeze_indices:
+        neb_in_constraints = (
+            "%geom Constraints\n"
+            + "\n".join([f"{{ C {i} C }}" for i in orca_freeze_indices])
+            + "\nend\nend\n"
+        )
+    else:
+        neb_in_constraints = ""
 
     neb_in_suffix = f"""
 * xyzfile {charge} {multiplicity} reactant.xyz
