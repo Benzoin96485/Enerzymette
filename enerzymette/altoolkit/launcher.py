@@ -1,6 +1,7 @@
 import os, subprocess, pickle, copy, sys, shutil, glob, json
 from random import shuffle
 from typing import Tuple, Optional, Dict, Callable, Literal, List
+import numpy as np
 import yaml
 import ase.io
 from ..external_calculator import get_calculator_patch
@@ -63,6 +64,7 @@ class active_learning_launcher:
         training_ratio: float=0.8,
         cluster_inference_batch_size: int=4,
         n_presimulation_steps_per_iteration: int=0,
+        A_ratio: float=0.36,
         continual_learning: bool=False,
         reset_parameters: bool=False,
         initial_scan: bool=False,
@@ -90,6 +92,7 @@ class active_learning_launcher:
         self.training_ratio = training_ratio
         self.cluster_inference_batch_size = cluster_inference_batch_size
         self.n_presimulation_steps_per_iteration = n_presimulation_steps_per_iteration
+        self.A_ratio = A_ratio
         self.initial_scan = initial_scan
         self.n_initial_scan_steps = n_initial_scan_steps
         self.structure_pool_state: Optional[Dict] = None
@@ -397,7 +400,11 @@ class active_learning_launcher:
         with open(prediction_config_path, "w") as f:
             yaml.dump(prediction_config, f, default_flow_style=False)
 
-        self._make_model_config(i, prediction_model_config_path, new_trainer_config={"inference_batch_size": self.cluster_inference_batch_size})
+        self._make_model_config(
+            i, prediction_model_config_path,
+            new_trainer_config={"inference_batch_size": self.cluster_inference_batch_size},
+            model_params_updater=self._prediction_model_params_updater if self.A_ratio > 0 else None,
+        )
 
         enerzyme_subprocess = subprocess.Popen(
             ["enerzyme", "predict", 
@@ -440,7 +447,38 @@ class active_learning_launcher:
             return average_E_var
         else:
             raise FileNotFoundError(f"Prediction pickles not found for {prediction_glob_pattern}")
-    
+
+    def _get_udd_A(self, i: int, B: float, na: int) -> Optional[float]:
+        '''
+        A such that, with the exponential factor of the UDD bias set to 1, the mean absolute
+        Cartesian component of the UDD bias force on the prediction frames of iteration i is
+        A_ratio times that of the predicted forces.
+        '''
+        _, _, _, prediction_glob_pattern = self._get_prediction_path(i)
+        prediction_pickles = glob.glob(prediction_glob_pattern)
+        if not prediction_pickles:
+            raise FileNotFoundError(f"Prediction pickles not found for {prediction_glob_pattern}")
+        with open(prediction_pickles[0], "rb") as f:
+            prediction_data = pickle.load(f)
+        if "E_var_grad" not in prediction_data:
+            logger.warning(
+                f"E_var_grad not found in {prediction_pickles[0]}; "
+                "keeping A from the simulation config."
+            )
+            return None
+        mean_abs_Fa = np.mean(np.concatenate([np.abs(Fa).ravel() for Fa in prediction_data["Fa"]]))
+        mean_abs_E_var_grad = np.mean(np.concatenate([np.abs(g).ravel() for g in prediction_data["E_var_grad"]]))
+        scale = 1 / (2 * na * B)
+        A = float(self.A_ratio * mean_abs_Fa / (scale * mean_abs_E_var_grad))
+        logger.info(
+            f"UDD A for iteration {i}: {A} (A_ratio={self.A_ratio}, "
+            f"mean |Fa|={mean_abs_Fa}, mean |E_var_grad|={mean_abs_E_var_grad})"
+        )
+        return A
+
+    def _prediction_model_params_updater(self, i: int, model_param: Dict) -> None:
+        model_param["layers"] = model_param["layers"] + [{"name": "EnergyVarianceGradient"}]
+
     def _udd_model_params_updater(self, i: int, model_param: Dict) -> None:
         shallow_ensemble_reduce_found = False
         new_layers = []
@@ -933,9 +971,12 @@ class active_learning_launcher:
                     self.NA = len(initial_structure)
                     logger.info(f"Initial structure has {self.NA} atoms.")
                 na = self.NA
-            simulation_config["Simulation"]["uncertainty_calculator"]["params"]["B"] = (
-                average_E_var / na
-            )
+            udd_params = simulation_config["Simulation"]["uncertainty_calculator"]["params"]
+            udd_params["B"] = average_E_var / na / 2
+            if self.A_ratio > 0:
+                A = self._get_udd_A(i, udd_params["B"], na)
+                if A is not None:
+                    udd_params["A"] = A
 
         simulation_config["System"]["structure_file"] = initial_structure_path
         simulation_config = self._inject_proton_transfer_config(
