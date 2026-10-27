@@ -6,7 +6,7 @@ def get_uma_calculator(
     task="omol",
     device="cuda",
     cache_dir=os.getenv("FAIRCHEM_CACHE_DIR"),
-    mode="turbo"
+    mode="nitro"
 ):
     _predict_unit = pretrained_mlip.get_predict_unit(
         model_name=model,
